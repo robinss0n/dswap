@@ -90,7 +90,7 @@ export interface RuntimeHostEnd {
 export type RetiredSession = Pick<SessionRecord, "bridgeSessionId" | "sdkSessionId" | "provider">;
 
 export interface BridgeRuntime {
-  readonly kind: "mock" | "fake" | "sdk" | "cursor";
+  readonly kind: "mock" | "fake" | "sdk" | "cursor" | "codex";
   handle(input: RuntimeRequest, sink?: StreamSink): Promise<RuntimeTurn>;
   cancel(sessionId: string, reason: string): Promise<void>;
   deliverResults(

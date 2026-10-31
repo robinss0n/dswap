@@ -393,7 +393,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       ?? withSlot(() => store.create({
         role,
         model: request.model,
-        ...(provider === "cursor" ? { provider } : {}),
+        ...(provider !== "claude" ? { provider } : {}),
         droidSessionId: explicitSessionId(headers, request),
         historyHash: historyPrefixHash(request),
         contextHash,
@@ -502,7 +502,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
         retryableRequestHash: undefined,
         role,
         model: request.model,
-        ...(provider === "cursor" ? { provider } : {}),
+        ...(provider !== "claude" ? { provider } : {}),
         contextHash,
         reasoning: droidReasoningLevel(request),
         historyHash: historyPrefixHash(request),

@@ -5,7 +5,7 @@ import { validAccount } from "./upstream/cswap.js";
 import { selectionFromConfig, type UpstreamSelection } from "./upstream/providers.js";
 
 /** Which runtime owns a menu entry or a session. Absent means Claude, including records written before Cursor existed. */
-export type ModelProvider = "claude" | "cursor";
+export type ModelProvider = "claude" | "cursor" | "codex";
 
 /** One Cursor parameter pinned to an allowed value. Omitting these makes the SDK use each parameter's first allowed value. */
 export interface CursorModelParameter {
@@ -32,6 +32,22 @@ export interface CursorParameterValues {
 
 /** Menu ids use this prefix so they cannot collide with Claude model ids. `:` is inside validId; brackets are not. */
 export const CURSOR_MODEL_PREFIX = "cursor:";
+/** Codex menu ids: `codex:<account>:<model>`; account is a Codex account name, `default` or `auto`. */
+export const CODEX_MODEL_PREFIX = "codex:";
+
+export function codexFromModelId(id: string): { account: string; model: string } | undefined {
+  if (!id.startsWith(CODEX_MODEL_PREFIX)) return undefined;
+  const rest = id.slice(CODEX_MODEL_PREFIX.length), split = rest.indexOf(":");
+  const account = rest.slice(0, split), model = rest.slice(split + 1);
+  return split > 0 && validAccount(account) && validId(model) ? { account, model } : undefined;
+}
+
+/** One Codex menu entry per account and model. */
+export function codexModels(models: string[], accounts: string[]): BridgeModel[] {
+  return validateModels(accounts.flatMap((account) => models.map((model) => ({
+    id: `${CODEX_MODEL_PREFIX}${account}:${model}`, model, provider: "codex" as const,
+    displayName: `Codex · ${model}${account === "default" ? "" : ` · ${account}`}` }))));
+}
 
 /** Claude menu ids pinned to a cswap account: `acct:<account>:<model>`, where account is a slot, alias or `auto`. */
 export const ACCOUNT_MODEL_PREFIX = "acct:";
@@ -48,13 +64,13 @@ export function withAccounts(models: BridgeModel[], accounts: string[]): BridgeM
   if (accounts.some((account) => !validAccount(account)) || new Set(accounts).size !== accounts.length) {
     throw new BridgeError(400, "invalid_model_catalog", "Accounts must be unique cswap slot numbers, aliases or auto.");
   }
-  const plain = models.filter((item) => item.provider !== "cursor" && !item.id.startsWith(ACCOUNT_MODEL_PREFIX));
+  const plain = models.filter((item) => (item.provider ?? "claude") === "claude" && !item.id.startsWith(ACCOUNT_MODEL_PREFIX));
   return validateModels([...models, ...accounts.flatMap((account) => plain.map((item) => ({
     id: `${ACCOUNT_MODEL_PREFIX}${account}:${item.id}`, model: item.model, displayName: `${item.displayName} · ${account}` })))]);
 }
 
 export function providerFromModelId(id: string): ModelProvider {
-  return id.startsWith(CURSOR_MODEL_PREFIX) ? "cursor" : "claude";
+  return id.startsWith(CURSOR_MODEL_PREFIX) ? "cursor" : id.startsWith(CODEX_MODEL_PREFIX) ? "codex" : "claude";
 }
 
 export interface RequestModel {
@@ -100,13 +116,16 @@ export function validateModels(models: BridgeModel[]): BridgeModel[] {
       || !item.displayName.trim() || item.displayName.length > 160 || /[\x00-\x1f\x7f]/.test(item.displayName) || seen.has(item.id)) {
       throw new BridgeError(400, "invalid_model_catalog", "Each model needs a unique ID, an actual model ID and a readable display name.");
     }
-    if (item.provider !== undefined && item.provider !== "claude" && item.provider !== "cursor") {
-      throw new BridgeError(400, "invalid_model_catalog", "Each model provider must be claude or cursor.");
+    if (item.provider !== undefined && item.provider !== "claude" && item.provider !== "cursor" && item.provider !== "codex") {
+      throw new BridgeError(400, "invalid_model_catalog", "Each model provider must be claude, cursor or codex.");
+    }
+    if (item.provider === "codex" && codexFromModelId(item.id)?.model !== item.model) {
+      throw new BridgeError(400, "invalid_model_catalog", "Codex model IDs look like codex:<account>:<model>.");
     }
     const cursor = item.provider === "cursor" ? normalizeCursorSelection(item.cursor) : undefined;
     seen.add(item.id);
     return { id: item.id, model: item.model, displayName: item.displayName.trim(),
-      ...(item.provider === "cursor" ? { provider: "cursor" as const, cursor } : item.provider === "claude" ? { provider: "claude" as const } : {}) };
+      ...(item.provider === "cursor" ? { provider: "cursor" as const, cursor } : item.provider === "codex" ? { provider: "codex" as const } : item.provider === "claude" ? { provider: "claude" as const } : {}) };
   });
 }
 
@@ -175,6 +194,7 @@ export function resolveRequestModel(config: BridgeConfig, requestedModel: string
     routeKey: JSON.stringify({ authMode: config.authMode, model: model ?? null,
       baseUrl: selection?.provider.baseUrl ?? null, tokenEnv: selection?.provider.tokenEnv ?? null,
       ...(provider === "cursor" ? { provider, cursor: profile?.cursor ?? null } : {}),
+      ...(provider === "codex" ? { provider, id: profile?.id ?? requestedModel } : {}),
       ...(account ? { account } : {}) }),
   };
 }

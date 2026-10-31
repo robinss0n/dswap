@@ -6,7 +6,8 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { modelsFromIds, parseModelIds, withAccounts, type BridgeModel } from "../src/models.js";
+import { codexModels, modelsFromIds, parseModelIds, withAccounts, type BridgeModel } from "../src/models.js";
+import { listCodexAccounts } from "../src/upstream/codex-accounts.js";
 import { coerceCursorCatalog, cursorMenuFromCatalog, formatCursorCatalog, type CursorCatalogItem } from "../src/runtime/cursor/catalog.js";
 import { CURSOR_LOGIN_COMMAND, cursorApiKey, cursorCredentialStatus, cursorExpiryWarning, formatCursorStatus, loginCursor, type CursorLogin } from "../src/runtime/cursor/credentials.js";
 import { cursorLoginFromSdk, loadCursorSdk, type CursorPlatformModule } from "../src/runtime/cursor/sdk-load.js";
@@ -22,6 +23,9 @@ const installationSchema = z.object({ version: z.literal(1), port: z.number().in
   claudeConfigDir: z.string().refine(isAbsolute, "Claude profile directory must be absolute").optional(),
   // cswap accounts listed per Claude model (`auto` picks per process); absent means the default login only.
   accounts: z.array(z.string()).optional(),
+  // Codex menu: models, and accounts (absent: auto when there are several Codex accounts, else default).
+  codexModels: z.array(z.string()).optional(),
+  codexAccounts: z.array(z.string()).optional(),
   // Whose system prompt drives Claude; absent means Droid's.
   prompt: z.enum(["claude-code", "droid"]).optional(),
   // Cursor menu selector (`default`, `first-party`, or an explicit list). The key stays out of this file.
@@ -102,6 +106,7 @@ function serviceEnv(deps: DesktopDependencies, install: Installation): Record<st
     ...(install.models ? { BRIDGE_MODELS: install.models.join(",") } : {}),
     ...(install.cursorModels ? { BRIDGE_CURSOR_MODELS_FILE: paths.cursorMenu } : {}),
     ...(install.accounts ? { BRIDGE_ACCOUNTS: install.accounts.join(",") } : {}),
+    ...(install.codexModels?.length ? { BRIDGE_CODEX_MODELS: install.codexModels.join(","), BRIDGE_CODEX_ACCOUNTS: codexAccountsFor(install).join(",") } : {}),
     BRIDGE_PROMPT: install.prompt ?? "droid" };
 }
 /** systemd quoting: each assignment is double-quoted, with backslash, quote and % escaped. */
@@ -196,7 +201,8 @@ function syncModels(deps: DesktopDependencies, install: Installation, cursorMenu
   assertClaudeCredential(config);
   const claude = install.models ? modelsFromIds(install.models, "claude-config").map(explicitLabel)
     : claudeConfigModels(config).models.map((model) => ({ ...model, displayName: `Claude Code · ${model.displayName.replace(/^Claude /, "")}` }));
-  const models = [...(install.accounts ? withAccounts(claude, install.accounts) : claude), ...(cursorMenu ?? [])];
+  const codex = install.codexModels?.length ? codexModels(install.codexModels, codexAccountsFor(install)) : [];
+  const models = [...(install.accounts ? withAccounts(claude, install.accounts) : claude), ...(cursorMenu ?? []), ...codex];
   // A literal key, not an apiKeyHelper: Droid strips executable credential
   // commands from the runtime settings that Mission workers and validators load.
   // The token only admits requests to this loopback Bridge.
@@ -222,7 +228,11 @@ function hasCswapAccounts(deps: DesktopDependencies): boolean {
   const result = deps.run("cswap", ["list", "--json"]);
   try { return result.status === 0 && (JSON.parse(result.stdout ?? "") as { accounts?: unknown[] }).accounts!.length > 0; } catch { return false; }
 }
-type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir" | "accounts" | "prompt">>;
+/** Pinned Codex accounts, else `auto` when there are several Codex logins and `default` when there is one. */
+function codexAccountsFor(install: Installation): string[] {
+  return install.codexAccounts ?? (listCodexAccounts().length > 1 ? ["auto"] : ["default"]);
+}
+type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir" | "accounts" | "prompt" | "codexModels" | "codexAccounts">>;
 function parseOptions(action: string, options: string[]): DesktopOptions {
   const parsed: DesktopOptions = {};
   for (let index = 0; index < options.length; index += 2) {
@@ -230,13 +240,15 @@ function parseOptions(action: string, options: string[]): DesktopOptions {
     if (flag === "--port" && action === "install" && parsed.port === undefined && /^\d+$/.test(value ?? "")) parsed.port = Number(value);
     else if (flag === "--models" && ["install", "restart"].includes(action) && parsed.models === undefined && value) parsed.models = parseModelIds(value);
     else if (flag === "--accounts" && ["install", "restart"].includes(action) && parsed.accounts === undefined && value) parsed.accounts = value === "none" ? [] : value.split(",").map((account) => account.trim());
+    else if (flag === "--codex-models" && ["install", "restart"].includes(action) && parsed.codexModels === undefined && value) parsed.codexModels = value === "none" ? [] : parseModelIds(value);
+    else if (flag === "--codex-accounts" && ["install", "restart"].includes(action) && parsed.codexAccounts === undefined && value) parsed.codexAccounts = value.split(",").map((account) => account.trim());
     else if (flag === "--prompt" && ["install", "restart"].includes(action) && parsed.prompt === undefined && (value === "droid" || value === "claude-code")) parsed.prompt = value;
     else if (flag === "--cursor-models" && ["install", "restart"].includes(action) && parsed.cursorModels === undefined && value) parsed.cursorModels = value;
     else if (flag === "--claude-config-dir" && ["install", "restart"].includes(action) && parsed.claudeConfigDir === undefined && value) {
       if (!isAbsolute(value)) throw new Error("--claude-config-dir must be an absolute profile directory.");
       parsed.claudeConfigDir = realpathSync(value);
     }
-    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code]; restart [--models id,id,...] [--cursor-models ...] [--claude-config-dir /absolute/profile].");
+    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code] [--codex-models id,id,...|none] [--codex-accounts default,auto,<name>,...]; restart [--models id,id,...] [--cursor-models ...] [--claude-config-dir /absolute/profile].");
   }
   return parsed;
 }
@@ -361,6 +373,7 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     const cursorWarning = cursorExpiryWarning(cursorStatus, now);
     return { installed: true, plistPresent: existsSync(paths.plist), loaded, port: install.port, claudeConfigDir: install.claudeConfigDir ?? join(deps.home, ".claude"), models: install.models ?? "follow Claude Code settings",
       accounts: install.accounts ?? [], prompt: install.prompt ?? "droid",
+      codex: install.codexModels?.length ? { models: install.codexModels, accounts: codexAccountsFor(install) } : "off",
       repositoryPresent: existsSync(join(install.repo, "dist/index.js")), healthy: await deps.health(install.port),
       runtime: deps.runtime ? await deps.runtime(install.port, paths.admin) : null, caveat,
       cursor: {
@@ -406,7 +419,9 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     } else cursorModels = undefined;
     const install: Installation = { ...previous, node: realpathSync(deps.node), ...(parsed.models ? { models: parsed.models } : {}),
       ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
-      ...(parsed.accounts ? { accounts: parsed.accounts } : {}), ...(parsed.prompt ? { prompt: parsed.prompt } : {}) };
+      ...(parsed.accounts ? { accounts: parsed.accounts } : {}), ...(parsed.prompt ? { prompt: parsed.prompt } : {}),
+      ...(parsed.codexModels ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}) };
+    if (install.codexModels?.length === 0) delete install.codexModels;
     if (install.accounts?.length === 0) delete install.accounts;
     if (cursorModels) install.cursorModels = cursorModels;
     else delete install.cursorModels;
@@ -430,7 +445,8 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     : cursorLoggedIn(deps) ? {} : { warning: cursorAbsentNotice() };
   const install: Installation = { version: 1, port, repo: realpathSync(deps.repo), node: realpathSync(deps.node), path: deps.path, ...(parsed.models ? { models: parsed.models } : {}), ...(cursor.menu ? { cursorModels: parsed.cursorModels } : {}),
     ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
-    prompt: parsed.prompt ?? "droid" };
+    prompt: parsed.prompt ?? "droid",
+    ...(parsed.codexModels?.length ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}) };
   const accounts = parsed.accounts ?? (hasCswapAccounts(deps) ? ["auto"] : []);
   if (accounts.length) install.accounts = accounts;
   assertClaudeCredential(readDesktopClaudeConfig(deps, install));

@@ -67,7 +67,7 @@ export function sessionContextHash(headers: Headers, request: MessagesRequest, c
     // Other thinking shapes, such as a provider's enabled budget, stay in the hash.
     thinking: reasoning ? undefined : request.thinking,
     ...(reasoning ? { reasoning } : {}),
-    ...(provider === "cursor" ? { provider } : {}),
+    ...(provider !== "claude" ? { provider } : {}),
   });
 }
 
@@ -261,7 +261,7 @@ export function resolveSession(
   }
   // Cursor can be handed the same completed tool-result body again a few seconds
   // later. That retry is not a new conversation. Claude keeps the old behavior.
-  if (requestProvider === "cursor") {
+  if (requestProvider === "cursor" || requestProvider === "codex") {
     const replays = sessions.filter((session) => {
       if (!inHostScope(session) || isEnded(session) || !historyContextMatches(session)) return false;
       // Idle: the turn already finished. Waiting: the turn parked a tool and Droid

@@ -16,6 +16,7 @@ export class RouterRuntime implements BridgeRuntime {
   constructor(
     private readonly claude: BridgeRuntime,
     private readonly cursor?: BridgeRuntime,
+    private readonly codex?: BridgeRuntime,
   ) {}
 
   async handle(input: RuntimeRequest, sink?: StreamSink): Promise<RuntimeTurn> {
@@ -55,14 +56,15 @@ export class RouterRuntime implements BridgeRuntime {
   setControl(control: RuntimeControl | undefined): void {
     this.claude.setControl?.(control);
     this.cursor?.setControl?.(control);
+    this.codex?.setControl?.(control);
   }
 
   describe(): Record<string, unknown> {
-    return { ...(this.claude.describe?.() ?? { kind: "sdk" }), cursor: this.cursor?.describe?.() ?? { enabled: false } };
+    return { ...(this.claude.describe?.() ?? { kind: "sdk" }), cursor: this.cursor?.describe?.() ?? { enabled: false }, codex: this.codex?.describe?.() ?? { enabled: false } };
   }
 
   protectedSessionIds(): string[] {
-    return [...(this.claude.protectedSessionIds?.() ?? []), ...(this.cursor?.protectedSessionIds?.() ?? [])];
+    return [...(this.claude.protectedSessionIds?.() ?? []), ...(this.cursor?.protectedSessionIds?.() ?? []), ...(this.codex?.protectedSessionIds?.() ?? [])];
   }
 
   isSessionUsable(sessionId: string): boolean {
@@ -70,7 +72,7 @@ export class RouterRuntime implements BridgeRuntime {
   }
 
   async close(): Promise<void> {
-    const results = await Promise.allSettled([this.claude.close?.(), this.cursor?.close?.()]);
+    const results = await Promise.allSettled([this.claude.close?.(), this.cursor?.close?.(), this.codex?.close?.()]);
     this.owners.clear();
     const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
     if (errors.length) throw new AggregateError(errors, "Runtime shutdown failed");
@@ -86,6 +88,10 @@ export class RouterRuntime implements BridgeRuntime {
   }
 
   private runtime(provider: ModelProvider): BridgeRuntime {
+    if (provider === "codex") {
+      if (!this.codex) throw new BridgeError(400, "codex_unavailable", "No Codex runtime is configured for this model.");
+      return this.codex;
+    }
     if (provider === "cursor") {
       if (!this.cursor) throw new BridgeError(400, "cursor_unavailable", "No Cursor runtime is configured for this model.");
       return this.cursor;

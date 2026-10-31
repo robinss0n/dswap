@@ -41,6 +41,7 @@
     "verify:native-policy": "tsx scripts/verify-native-tool-policy.ts",
     "verify:auxiliary": "tsx scripts/verify-auxiliary.ts",
     "verify:mission": "tsx scripts/verify-mission-final.ts",
+    "verify:codex": "tsx scripts/verify-codex.ts",
     "desktop": "tsx scripts/desktop.ts",
     "accounts": "tsx scripts/accounts.ts",
     "test:soak": "node --expose-gc --import tsx scripts/soak.ts",

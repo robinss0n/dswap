@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import type { BridgeMode } from "./types.js";
 import { parseAuthMode, type AuthMode } from "./upstream/auth-env.js";
 import { canonicalWorkspacePath } from "./workspace.js";
-import { modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
+import { codexModels, modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
 
 export interface BridgeConfig {
   desktopProfile?: boolean;
@@ -55,6 +55,14 @@ export interface BridgeConfig {
   upstreamModel?: string;
   upstreamTokenEnv?: string;
   models?: BridgeModel[];
+}
+
+/** BRIDGE_CODEX_MODELS (+ BRIDGE_CODEX_ACCOUNTS, default `default`) adds the Codex menu entries. */
+function codexMenuEnv(): BridgeModel[] {
+  const models = env("BRIDGE_CODEX_MODELS");
+  if (!models) return [];
+  const accounts = (env("BRIDGE_CODEX_ACCOUNTS") ?? "default").split(",").map((account) => account.trim());
+  return codexModels(parseModelIds(models), accounts);
 }
 
 /** BRIDGE_ACCOUNTS adds the `acct:` copies the desktop installer put in Droid's menu. */
@@ -128,9 +136,10 @@ function readCursorMenu(file: string | undefined): BridgeModel[] | undefined {
   return validateModels(parsed as BridgeModel[]);
 }
 
-function mergeModelCatalog(base: BridgeModel[] | undefined, cursor: BridgeModel[] | undefined): BridgeModel[] | undefined {
-  if (!cursor?.length) return base;
-  return validateModels([...(base ?? []).filter((model) => model.provider !== "cursor"), ...cursor]);
+/** Claude entries from settings plus the Cursor and Codex menus. */
+function mergeModelCatalog(base: BridgeModel[] | undefined, extra: BridgeModel[]): BridgeModel[] | undefined {
+  if (!extra.length) return base;
+  return validateModels([...(base ?? []).filter((model) => (model.provider ?? "claude") === "claude"), ...extra]);
 }
 
 function tokenEnv(name: string): string | undefined {
@@ -227,7 +236,7 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     models: overrides.models !== undefined ? validateModels(overrides.models)
       : mergeModelCatalog(
         withAccountsEnv(env("BRIDGE_MODELS") ? modelsFromIds(parseModelIds(env("BRIDGE_MODELS")!), authMode) : claudeConfig ? claudeConfigModels(claudeConfig).models : undefined),
-        readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")),
+        [...(readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")) ?? []), ...codexMenuEnv()],
       ),
   };
   for (const [name, value, minimum] of [
