@@ -62,7 +62,18 @@ export interface CodexRuntimeDependencies {
   now?: () => number;
 }
 
-const EFFORT: Record<string, string> = { off: "minimal", low: "low", medium: "medium", high: "high", max: "xhigh" };
+// Droid level -> Codex effort. Every model in Codex's catalog (models_cache.json,
+// 2026-10-31) accepts low, medium, high, xhigh and max. None accepts "minimal"
+// (gpt-6.1-sol fails the turn with it), so Droid's "off" maps to the lowest, low.
+const EFFORT: Record<string, string> = { off: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
+
+/**
+ * Codex runs a model's parallel function calls at once, so their item/tool/call
+ * requests arrive a few milliseconds apart. Answer Droid only once they stop
+ * arriving, so one assistant message carries all of them.
+ */
+const TOOL_GATHER_MS = 120;
+const TOOL_GATHER_MAX_MS = 1500;
 
 export class CodexRuntime implements BridgeRuntime {
   readonly kind = "codex" as const;
@@ -118,7 +129,9 @@ export class CodexRuntime implements BridgeRuntime {
     try {
       const requestHash = historyMessageHashes(input.request.messages).join("\n");
       if (live.lastTurn && live.lastRequestHash === requestHash) return live.lastTurn;
-      live.blocks = [];
+      // live.blocks is NOT cleared here: anything in it arrived after the last
+      // response was cut (a parallel tool call, trailing text) and Droid has not
+      // seen it yet. Dropping it left Codex waiting on calls Droid never got.
       const park = this.armPark(live);
       this.deliverRequestResults(live, input);
       if (!live.turnId) {
@@ -211,7 +224,16 @@ export class CodexRuntime implements BridgeRuntime {
     const started = await server.request<{ thread: { id: string } }>("thread/start", {
       cwd, model: route.model, approvalPolicy: "never", sandbox: "read-only", serviceName: "factory-cc",
       ...(droidPrompt ? { developerInstructions: droidPrompt } : {}),
-      config: { features: CODEX_BUILTIN_FEATURES_OFF, web_search: "disabled" },
+      // The read-only sandbox only bounds Codex's own built-in tools, which are off.
+      // Codex still told the model so twice: "the sandbox only permits reading
+      // files" (permissions instructions) and a read-only permission_profile in
+      // <environment_context>. The model then refused to edit although Droid's
+      // Edit/Create/Execute were right there. Droid sends its own environment
+      // reminder (cwd, OS) and its prompt says what its tools may do.
+      config: {
+        features: CODEX_BUILTIN_FEATURES_OFF, web_search: "disabled",
+        include_permissions_instructions: false, include_environment_context: false,
+      },
       dynamicTools: (input.request.tools ?? []).map((tool) => ({ type: "function", name: tool.name, description: tool.description ?? tool.name, inputSchema: tool.input_schema ?? { type: "object", properties: {} } })),
     });
     live.threadId = started.thread.id;
@@ -244,7 +266,9 @@ export class CodexRuntime implements BridgeRuntime {
         const args = (params.arguments && typeof params.arguments === "object" ? params.arguments : {}) as Json;
         live.pending.set(id, { resolve, reject, name: params.tool, input: args });
         live.blocks.push({ type: "tool_use", id, name: params.tool, input: args });
-        live.sink?.toolTrace(params.tool, "");
+        // This becomes a real tool_use block for Droid; a "[Tool]" text trace
+        // would only add noise to the transcript.
+        live.sink?.activity?.();
         live.releasePark?.();
       });
     }
@@ -283,9 +307,9 @@ export class CodexRuntime implements BridgeRuntime {
   }
 
   private async finishOrPark(live: LiveCodex, input: RuntimeRequest, park: Promise<void>): Promise<RuntimeTurn> {
-    if (live.pending.size) return this.turn(live, input, "tool_use");
+    if (live.pending.size) return this.toolTurn(live, input);
     const outcome = await Promise.race([park.then(() => undefined), live.turnDone!]);
-    if (!outcome || live.pending.size) return this.turn(live, input, "tool_use");
+    if (!outcome || live.pending.size) return this.toolTurn(live, input);
     if (outcome.status === "failed") {
       const message = outcome.error?.message ?? live.lastError ?? "Codex turn failed";
       const limited = /usage limit|rate limit|429/i.test(message);
@@ -295,9 +319,23 @@ export class CodexRuntime implements BridgeRuntime {
     return this.turn(live, input, "end_turn");
   }
 
+  /** Wait for sibling parallel calls, then hand Droid every call it has not seen. */
+  private async toolTurn(live: LiveCodex, input: RuntimeRequest): Promise<RuntimeTurn> {
+    const deadline = this.now() + TOOL_GATHER_MAX_MS;
+    let seen = -1;
+    while (live.blocks.length !== seen && this.now() < deadline && !live.ended) {
+      seen = live.blocks.length;
+      await new Promise((resolve) => setTimeout(resolve, TOOL_GATHER_MS));
+    }
+    return this.turn(live, input, "tool_use");
+  }
+
   private turn(live: LiveCodex, input: RuntimeRequest, stop: "tool_use" | "end_turn"): RuntimeTurn {
+    const blocks = live.blocks;
+    // Whatever arrives from here on belongs to the next response.
+    live.blocks = [];
     return {
-      response: assistantMessage(input.request.model, [...live.blocks], stop, live.usage ?? { input_tokens: 0, output_tokens: 0, estimated: true }),
+      response: assistantMessage(input.request.model, blocks, stop, live.usage ?? { input_tokens: 0, output_tokens: 0, estimated: true }),
       pendingToolIds: [...live.pending.keys()],
       sdkSessionId: live.threadId,
     };
