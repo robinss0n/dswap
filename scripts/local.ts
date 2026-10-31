@@ -11,7 +11,7 @@ import { isAnthropicHost, preflightAuth } from "../src/upstream/auth-env.js";
 import { installFactoryHooks, removeFactoryHooks } from "../src/control/factory-hooks.js";
 import { createBridgeApp, listen, type BridgeApp } from "../src/http/app.js";
 import { createLogger } from "../src/logging.js";
-import { modelsFromIds, parseModelIds } from "../src/models.js";
+import { modelsFromIds, parseModelIds, withAccounts } from "../src/models.js";
 import { configureDroid } from "./configure-droid.js";
 import { installDroidCommand } from "./generate-droid.js";
 import { runDroid } from "./run-droid.js";
@@ -25,6 +25,7 @@ Claude Code and Droid must already be installed and available on PATH.
   --base-url <URL>  Anthropic-compatible BYOK endpoint (prompted if omitted)
   --model <ID>      Default model (prompted for byok if omitted)
   --models <IDs>    Actual model choices, e.g. glm-5.2,glm-4.7 or sonnet,opus,haiku
+  --accounts <LIST> Also list every Claude model once per cswap account, e.g. auto,work,4
   --key-env <NAME>  Read the byok/claude-config key from this environment variable
   -h, --help       Show help without changing any files
 
@@ -51,7 +52,7 @@ admin-token file. FACTORY_AIRGAP_ENABLED=1 remains an experimental Factory CLI m
 const LOCAL_AUTH = ["claude-config", "byok", "subscription", "anthropic-api"] as const;
 type LocalAuth = (typeof LOCAL_AUTH)[number];
 
-export interface LocalArgs { project: string; baseUrl?: string; model?: string; models?: string[]; keyEnv?: string; auth: LocalAuth; help: boolean }
+export interface LocalArgs { project: string; baseUrl?: string; model?: string; models?: string[]; accounts?: string[]; keyEnv?: string; auth: LocalAuth; help: boolean }
 
 function endpoint(value: string): string {
   let url: URL;
@@ -79,7 +80,7 @@ export function parseLocalArgs(argv: string[]): LocalArgs {
       if (/[\x00-\x1f\x7f]/.test(flag)) throw new Error("Project path cannot contain control characters.");
       result.project = resolve(flag); continue;
     }
-    if (!["--base-url", "--model", "--models", "--key-env", "--auth"].includes(flag)) throw new Error("Unknown local option; use --help. Credentials must not appear in command arguments.");
+    if (!["--base-url", "--model", "--models", "--accounts", "--key-env", "--auth"].includes(flag)) throw new Error("Unknown local option; use --help. Credentials must not appear in command arguments.");
     if (seen.has(flag)) throw new Error(`Duplicate option ${flag}.`);
     seen.add(flag);
     const value = argv[++index];
@@ -87,6 +88,7 @@ export function parseLocalArgs(argv: string[]): LocalArgs {
     if (flag === "--base-url") result.baseUrl = endpoint(value);
     else if (flag === "--model") result.model = modelId(value);
     else if (flag === "--models") result.models = parseModelIds(value);
+    else if (flag === "--accounts") result.accounts = value.split(",").map((account) => account.trim());
     else if (flag === "--auth") {
       if (!(LOCAL_AUTH as readonly string[]).includes(value)) throw new Error("--auth must be claude-config, byok, subscription or anthropic-api.");
       result.auth = value as LocalAuth;
@@ -285,6 +287,11 @@ export async function runLocal(argv: string[], env: NodeJS.ProcessEnv = process.
       model = args.model ?? ids[0]!;
       catalog = modelsFromIds(ids, args.auth);
       preflightAuth(args.auth, env);
+    }
+    if (args.accounts) {
+      if (args.auth === "byok") throw new Error("--accounts uses your cswap Claude logins; it does not work with --auth byok.");
+      catalog = withAccounts(catalog, args.accounts);
+      ids = catalog.map((item) => item.id);
     }
     if (abort.signal.aborted) return 130;
     directory(join(repository, "tmp/local"), true, true); directory(state, true, true);

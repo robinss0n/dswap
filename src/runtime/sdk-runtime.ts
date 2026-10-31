@@ -21,6 +21,7 @@ import { redactClaudeConfigText, claudeConfigNeedsLogin, CLAUDE_LOGIN_REQUIRED }
 import { buildChildEnv, classifyAuth, maskEmail, type AuthClassification, type AuthObservation } from "../upstream/auth-env.js";
 import { publicSelection, sdkEnv, selectionFromConfig, type UpstreamSelection } from "../upstream/providers.js";
 import { resolveRequestModel } from "../models.js";
+import { CSWAP_LAUNCHER, resolveAccount } from "../upstream/cswap.js";
 import { claudeReasoningKey, claudeReasoningOptions, droidReasoningLevel } from "./reasoning.js";
 import { OwnedProcesses } from "./owned-processes.js";
 import { upstreamError } from "./upstream-error.js";
@@ -951,6 +952,14 @@ export class SdkRuntime implements BridgeRuntime {
     if (reasoning?.thinking) options.thinking = reasoning.thinking;
     live.reasoningKey = claudeReasoningKey(input.request);
     if (this.config.claudeExecutable) options.pathToClaudeCodeExecutable = this.config.claudeExecutable;
+    if (route?.account) {
+      // cswap points CLAUDE_CONFIG_DIR at the account's profile. auto picks again for every new process.
+      const account = resolveAccount(route.account);
+      env.BRIDGE_CSWAP_ACCOUNT = account;
+      options.pathToClaudeCodeExecutable = CSWAP_LAUNCHER;
+      live.events.push({ at: now(), type: "cswap_account", data: { route: route.account, account } });
+      this.logger.info("cswap_account", { route: route.account, account });
+    } else delete env.BRIDGE_CSWAP_ACCOUNT;
     if (live.sdkSessionId) options.resume = live.sdkSessionId;
     const expectedResumeId = route ? live.sdkSessionId : undefined;
     const queryStart = { resumed: Boolean(live.sdkSessionId), sdkSessionId: live.sdkSessionId, droidMcp: catalog.definitions().map((tool) => tool.name), effort: reasoning?.effort ?? null, thinking: reasoning?.thinking?.type ?? null };

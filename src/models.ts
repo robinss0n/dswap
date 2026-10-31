@@ -1,6 +1,7 @@
 import type { BridgeConfig } from "./config.js";
 import { BridgeError } from "./types.js";
 import type { AuthMode } from "./upstream/auth-env.js";
+import { validAccount } from "./upstream/cswap.js";
 import { selectionFromConfig, type UpstreamSelection } from "./upstream/providers.js";
 
 /** Which runtime owns a menu entry or a session. Absent means Claude, including records written before Cursor existed. */
@@ -32,6 +33,26 @@ export interface CursorParameterValues {
 /** Menu ids use this prefix so they cannot collide with Claude model ids. `:` is inside validId; brackets are not. */
 export const CURSOR_MODEL_PREFIX = "cursor:";
 
+/** Claude menu ids pinned to a cswap account: `acct:<account>:<model>`, where account is a slot, alias or `auto`. */
+export const ACCOUNT_MODEL_PREFIX = "acct:";
+
+export function accountFromModelId(id: string): { account: string; model: string } | undefined {
+  if (!id.startsWith(ACCOUNT_MODEL_PREFIX)) return undefined;
+  const rest = id.slice(ACCOUNT_MODEL_PREFIX.length), split = rest.indexOf(":");
+  const account = rest.slice(0, split), model = rest.slice(split + 1);
+  return split > 0 && validAccount(account) && validId(model) ? { account, model } : undefined;
+}
+
+/** Add an `acct:` copy of every Claude menu entry for each account, keeping the plain entries. */
+export function withAccounts(models: BridgeModel[], accounts: string[]): BridgeModel[] {
+  if (accounts.some((account) => !validAccount(account)) || new Set(accounts).size !== accounts.length) {
+    throw new BridgeError(400, "invalid_model_catalog", "Accounts must be unique cswap slot numbers, aliases or auto.");
+  }
+  const plain = models.filter((item) => item.provider !== "cursor" && !item.id.startsWith(ACCOUNT_MODEL_PREFIX));
+  return validateModels([...models, ...accounts.flatMap((account) => plain.map((item) => ({
+    id: `${ACCOUNT_MODEL_PREFIX}${account}:${item.id}`, model: item.model, displayName: `${item.displayName} · ${account}` })))]);
+}
+
 export function providerFromModelId(id: string): ModelProvider {
   return id.startsWith(CURSOR_MODEL_PREFIX) ? "cursor" : "claude";
 }
@@ -43,6 +64,8 @@ export interface RequestModel {
   selection?: UpstreamSelection;
   provider: ModelProvider;
   cursor?: { id: string; params: CursorModelParameter[]; parameters?: CursorParameterValues[] };
+  /** cswap account for this route; absent uses the default Claude login. */
+  account?: string;
   routeKey: string;
 }
 
@@ -59,9 +82,14 @@ export function parseModelIds(value: string): string[] {
 
 export function modelsFromIds(ids: string[], authMode: AuthMode = "byok"): BridgeModel[] {
   const friendly = authMode === "claude-config" || authMode === "subscription" || authMode === "anthropic-api";
-  return validateModels(ids.map((id) => ({ id, model: id,
-    displayName: friendly && names[id] ? names[id]! : /^glm-/i.test(id) ? id.toUpperCase() : id,
-  })));
+  const display = (id: string) => friendly && names[id] ? names[id]! : /^glm-/i.test(id) ? id.toUpperCase() : id;
+  return validateModels(ids.map((id) => {
+    const pinned = accountFromModelId(id);
+    if (id.startsWith(ACCOUNT_MODEL_PREFIX) && !pinned) throw new BridgeError(400, "invalid_model_catalog", "Account model IDs look like acct:<account>:<model>.");
+    return pinned
+      ? { id, model: pinned.model, displayName: `${display(pinned.model)} · ${pinned.account}` }
+      : { id, model: id, displayName: display(id) };
+  }));
 }
 
 export function validateModels(models: BridgeModel[]): BridgeModel[] {
@@ -134,6 +162,7 @@ export function resolveRequestModel(config: BridgeConfig, requestedModel: string
     : undefined;
   if (config.authMode === "byok" && !selection) throw new BridgeError(401, "blocked_auth", "BYOK requires an explicit endpoint, model and key environment variable.");
   const provider = profile?.provider ?? providerFromModelId(profile?.id ?? requestedModel);
+  const account = provider === "claude" ? accountFromModelId(profile?.id ?? requestedModel)?.account : undefined;
   return {
     id: profile?.id ?? requestedModel,
     model,
@@ -141,9 +170,11 @@ export function resolveRequestModel(config: BridgeConfig, requestedModel: string
     selection,
     provider,
     ...(profile?.cursor ? { cursor: profile.cursor } : {}),
-    // Claude route keys stay the historical shape. Cursor keys also pin the parameter list.
+    ...(account ? { account } : {}),
+    // Claude route keys stay the historical shape. Cursor keys also pin the parameter list; account routes pin the account.
     routeKey: JSON.stringify({ authMode: config.authMode, model: model ?? null,
       baseUrl: selection?.provider.baseUrl ?? null, tokenEnv: selection?.provider.tokenEnv ?? null,
-      ...(provider === "cursor" ? { provider, cursor: profile?.cursor ?? null } : {}) }),
+      ...(provider === "cursor" ? { provider, cursor: profile?.cursor ?? null } : {}),
+      ...(account ? { account } : {}) }),
   };
 }
