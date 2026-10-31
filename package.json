@@ -42,6 +42,7 @@
     "verify:auxiliary": "tsx scripts/verify-auxiliary.ts",
     "verify:mission": "tsx scripts/verify-mission-final.ts",
     "desktop": "tsx scripts/desktop.ts",
+    "accounts": "tsx scripts/accounts.ts",
     "test:soak": "node --expose-gc --import tsx scripts/soak.ts",
     "verify:long-run": "tsx scripts/live-stability.ts",
     "test:soak:sdk-local": "tsx scripts/sdk-local-soak.ts"
