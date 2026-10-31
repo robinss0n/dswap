@@ -1,4 +1,9 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { emitKeypressEvents, type Key } from "node:readline";
+import { readPrimeLog } from "../src/upstream/prime.js";
+import { primeServiceState, type PrimeServiceState } from "./prime.js";
 import { DEFAULT_CODEX_ACCOUNT } from "../src/upstream/codex-accounts.js";
 import { accounts as runCli, addCodex, auto, autoLog, autoState, cswap, loadClaude, loadCodex, loadGoogle, loginClaude, loginCodex, quickCswapArgs, removeCodex, type Account, type AutoState } from "./accounts.js";
 
@@ -92,6 +97,77 @@ function gradient(text: string): string {
   }).join("");
 }
 
+/** The logo's gradient with a white glint around column `glint`. */
+function shimmer(text: string, glint: number): string {
+  if (COLORS === "none") return text;
+  const chars = [...text], stops: RGB[] = [THEME.blue, THEME.cyan, THEME.green];
+  return chars.map((char, index) => {
+    if (char === " ") return char;
+    const t = (chars.length > 1 ? index / (chars.length - 1) : 0) * (stops.length - 1);
+    const segment = Math.min(Math.floor(t), stops.length - 2), local = t - segment;
+    const base = [0, 1, 2].map((part) => stops[segment]![part]! + (stops[segment + 1]![part]! - stops[segment]![part]!) * local);
+    const light = Math.max(0, 1 - Math.abs(index - glint) / 3);
+    return fg(base.map((value) => Math.round(value + (255 - value) * light)) as unknown as RGB)(char);
+  }).join("");
+}
+
+export const INTRO_MS = { reveal: 650, hold: 350, move: 500 };
+/** The dashboard never grows wider than this; on a wide terminal it keeps to the left. */
+export const MAX_WIDTH = 140;
+
+// ── settings ─────────────────────────────────────────────────────────────────
+/** Same rule as Droid's `logoAnimation`: `once` plays the start animation one time, then becomes `off`. */
+export type LogoAnimation = "once" | "always" | "off";
+export interface DswapSettings { logoAnimation?: LogoAnimation }
+
+export function settingsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.DSWAP_SETTINGS ?? join(env.HOME ?? homedir(), ".local/share/factory-cc-accounts/dswap-settings.json");
+}
+export function loadSettings(env: NodeJS.ProcessEnv = process.env): DswapSettings {
+  try { return existsSync(settingsPath(env)) ? JSON.parse(readFileSync(settingsPath(env), "utf8")) as DswapSettings : {}; } catch { return {}; }
+}
+export function saveSettings(patch: DswapSettings, env: NodeJS.ProcessEnv = process.env): void {
+  mkdirSync(dirname(settingsPath(env)), { recursive: true });
+  writeFileSync(settingsPath(env), `${JSON.stringify({ ...loadSettings(env), ...patch }, null, 2)}\n`);
+}
+export const logoAnimation = (env: NodeJS.ProcessEnv = process.env): LogoAnimation => loadSettings(env).logoAnimation ?? "once";
+export const shouldShowLogoAnimation = (env: NodeJS.ProcessEnv = process.env) => logoAnimation(env) !== "off";
+export function markLogoAnimationShown(env: NodeJS.ProcessEnv = process.env): void {
+  if (logoAnimation(env) === "once") saveSettings({ logoAnimation: "off" }, env);
+}
+export function setLogoAnimation(value: string, env: NodeJS.ProcessEnv = process.env): LogoAnimation {
+  if (value !== "once" && value !== "always" && value !== "off") throw new Error("The logo animation is once, always or off.");
+  saveSettings({ logoAnimation: value }, env);
+  return value;
+}
+const easeInOut = (t: number) => t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+
+/**
+ * One frame of the start animation at `ms`: the logo is drawn column by column in the middle of
+ * the screen, a glint sweeps over it, then it glides to its place in the dashboard's top-left.
+ */
+export function introFrame(ms: number, columns: number, rows: number): string[] {
+  const width = [...LOGO[0]!].length;
+  const area = Math.min(columns - 1, MAX_WIDTH);
+  const center = { x: Math.max(0, Math.floor((area - width) / 2)), y: Math.max(0, Math.floor(rows / 2) - 1) };
+  const home = { x: 2, y: 0 };
+  const { reveal, hold, move } = INTRO_MS;
+  let shown = width, glint = -10, at = center;
+  if (ms < reveal) { shown = Math.floor((ms / reveal) * width) + 1; glint = shown - 1; }
+  else if (ms < reveal + hold) glint = ((ms - reveal) / hold) * (width + 6) - 3;
+  else {
+    const t = easeInOut(Math.min(1, (ms - reveal - hold) / move));
+    at = { x: Math.round(center.x + (home.x - center.x) * t), y: Math.round(center.y + (home.y - center.y) * t) };
+  }
+  const lines: string[] = Array.from({ length: rows }, () => "");
+  LOGO.forEach((row, index) => {
+    if (at.y + index >= rows) return;
+    const cut = [...row].slice(0, Math.min(shown, width)).join("");
+    lines[at.y + index] = `${" ".repeat(at.x)}${shimmer(cut, glint)}`;
+  });
+  return lines;
+}
+
 function usageColor(value: number): (text: string) => string {
   return value >= 90 ? c.bad : value >= 70 ? c.warn : c.green;
 }
@@ -135,6 +211,12 @@ export const COMMANDS: Command[] = [
   { name: "runtime google", args: "", about: "install or update Google's Antigravity agent" },
   { name: "auto on", args: "", about: "run cswap auto in the background" },
   { name: "auto off", args: "", about: "stop cswap auto" },
+  { name: "prime on", args: "", about: "keep every 5-hour window rolling (starts the next one as soon as one ends)" },
+  { name: "prime off", args: "", about: "stop priming" },
+  { name: "prime", args: "", about: "prime now: ping accounts whose 5-hour window is not running" },
+  { name: "prime status", args: "", about: "priming settings and last pings" },
+  { name: "prime quiet", args: "<3-5|off>", about: "no pings in these hours" },
+  { name: "intro", args: "<once|always|off>", about: "the logo animation on start (once: next start only)" },
   { name: "refresh", args: "", about: "reload every account" },
   { name: "help", args: "", about: "every key and command" },
   { name: "quit", args: "", about: "leave dswap" },
@@ -184,10 +266,10 @@ type Mode =
 type Tone = "ok" | "error" | "info" | "busy";
 
 /** Made-up accounts for `dswap demo`: safe to screenshot, nothing real is read. */
-export function demoData(now = new Date()): { claude: Account[]; codex: Account[]; google: Account[]; journal: string[] } {
+export function demoData(now = new Date()): { claude: Account[]; codex: Account[]; google: Account[]; journal: string[]; prime: string[] } {
   const claude: Account[] = [
     { provider: "claude", selector: "1", label: "1 work", email: "ada@example.com", plan: "Max 20x", fiveHour: 57, weekly: 31, resets: "4h 12m", fiveHourResets: "4h 12m", weeklyResets: "3d 6h", status: "ok", active: true },
-    { provider: "claude", selector: "2", label: "2 side", email: "grace@example.com", plan: "Max 5x", fiveHour: 0, weekly: 100, resets: "3d 23h", weeklyResets: "3d 23h", status: "limited" },
+    { provider: "claude", selector: "2", label: "2 side", email: "grace@example.com", plan: "Max 5x", fiveHour: 0, fiveHourIdle: true, weekly: 100, resets: "3d 23h", weeklyResets: "3d 23h", status: "limited" },
     { provider: "claude", selector: "3", label: "3 team", email: "linus@example.com", plan: "Team", fiveHour: 29, weekly: 69, resets: "2d 5h", fiveHourResets: "3h 4m", weeklyResets: "2d 5h", status: "ok" },
   ];
   const codex: Account[] = [
@@ -203,7 +285,8 @@ export function demoData(now = new Date()): { claude: Account[]; codex: Account[
     `${at(29)} switching to Account-1 (ada@example.com) → most room left`,
     ...[24, 18, 12, 6, 0].map((ago, index) => `${at(ago)} Account-1 (ada@example.com): ${33 + index * 6}% used (switch at 90%) | others: #2: 7d 100%, #3: 5h 29% · 7d 69%`),
   ];
-  return { claude, codex, google, journal };
+  const prime = [`${at(42)} primed google main (window not started, gemini-3.8-flash-low); next reset ~${new Date(now.getTime() + 258 * 60_000).toTimeString().slice(0, 5)}`];
+  return { claude, codex, google, journal, prime };
 }
 
 export async function dashboard(options: { demo?: boolean } = {}): Promise<number> {
@@ -222,6 +305,8 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
   let message: { text: string; tone: Tone } | undefined;
   const events: Array<{ time: string; text: string; tone: Tone }> = [];
   let journal: string[] = [];
+  let primeNow: PrimeServiceState = "off";
+  let primeLines: string[] = [];
   let generation = 0;
   let spinner = 0;
   let running = false;
@@ -256,8 +341,9 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
 
   async function refresh(): Promise<void> {
     if (demo) {
-      ({ claude, codex, google, journal } = demoData());
+      ({ claude, codex, google, journal, prime: primeLines } = demoData());
       autoNow = "on";
+      primeNow = "on";
       codexLoading = false;
       ensureSelection();
       render();
@@ -267,6 +353,8 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     claude = loadClaude();
     autoNow = autoState();
     journal = autoNow === "on" || autoNow === "installed" ? autoLog() : [];
+    primeNow = primeServiceState();
+    primeLines = readPrimeLog();
     codexLoading = true;
     ensureSelection();
     render();
@@ -383,6 +471,8 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
         } }; } },
       ...(autoNow === "unsupported" ? [] : [{ keys: ["t"], hint: "t", label: autoOn ? "cswap auto off" : "cswap auto on", cli: `dswap auto ${autoOn ? "off" : "on"}`,
         run: () => suspended(`dswap auto ${autoOn ? "off" : "on"}`, () => { auto(autoOn ? "off" : "on"); }, `cswap auto is ${autoOn ? "off" : "on"}.`) }]),
+      ...(primeNow === "unsupported" ? [] : [{ keys: ["p"], hint: "p", label: primeNow === "on" ? "priming off" : "priming on", cli: `dswap prime ${primeNow === "on" ? "off" : "on"}`,
+        run: () => suspended(`dswap prime ${primeNow === "on" ? "off" : "on"}`, () => runCli(["prime", primeNow === "on" ? "off" : "on"]), `Priming is ${primeNow === "on" ? "off" : "on"}.`) }]),
       { keys: ["r"], hint: "r", label: "refresh", cli: "dswap list", run: async () => { say("Refreshed.", "ok"); await refresh(); } },
       { keys: ["?"], hint: "?", label: "help", cli: "dswap help", run: () => { help = !help; } },
       { keys: ["q", "escape"], hint: "q", label: "quit", cli: "", run: () => quit() },
@@ -399,6 +489,12 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     if (verb === "help" || verb === "?") { help = true; return; }
     if (verb === "quit" || verb === "exit" || verb === "q") return quit();
     if (verb === "tui" || verb === "ui") { say("You are in the dashboard already."); return; }
+    if (verb === "intro") {
+      if (!target) { say(`Logo animation: ${logoAnimation()} (once, always or off).`); return; }
+      try { say(`Logo animation: ${setLogoAnimation(target)}.`, "ok"); } catch (error) { say(errorText(error), "error"); }
+      return;
+    }
+    if (verb === "prime") return suspended(`dswap ${line}`, () => runCli(argv), `dswap ${line} finished.`);
     const quickArgs = quickCswapArgs(argv);
     if (quickArgs) return quick(`dswap ${line}`, quickArgs, `Done: dswap ${line}`);
     if ((verb === "remove" || verb === "rm") && target === "codex" && name) return removeCodexNow(name);
@@ -425,13 +521,16 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     let emailW = Math.min(28, Math.max(5, ...all.map((account) => account.email.length)));
     const planW = Math.min(22, Math.max(4, ...all.map((account) => account.plan.length)));
     const statusW = 16, resetW = 7;
-    const need = (bars: boolean, plan: boolean) => 4 + labelW + 2 + emailW + 2 + (plan ? planW + 2 : 0) + 2 * ((bars ? 15 : 4) + 2) + resetW + 2 + statusW;
+    const need = (bars: boolean, plan: boolean) => 4 + labelW + 2 + emailW + 2 + (plan ? planW + 2 : 0) + 2 * ((bars ? 15 : 4) + 1 + resetW + 2) + statusW;
     const showBars = need(true, false) <= inner, showPlan = need(true, true) <= inner;
     if (need(showBars, showPlan) > inner) emailW = Math.max(10, emailW - (need(showBars, showPlan) - inner));
     const usageW = showBars ? 15 : 4;
     const usage = (value?: number) => showBars ? bar(value) : value === undefined ? c.muted("   -") : usageColor(value)(`${Math.round(value)}%`.padStart(4));
     const lines: string[] = [];
-    lines.push(c.muted(`    ${fit("ACCOUNT", labelW)}  ${fit("EMAIL", emailW)}  ${showPlan ? `${fit("PLAN", planW)}  ` : ""}${fit("5H", usageW)}  ${fit("WEEK", usageW)}  ${fit("RESETS", resetW)}  STATUS`));
+    // Each window shows its own reset: the 5-hour one runs on a different clock than the week.
+    const reset = (value: number | undefined, resets: string | undefined, idle?: boolean) =>
+      idle ? c.muted(fit("idle", resetW)) : value === undefined ? " ".repeat(resetW) : c.purple(fit(resets ?? "", resetW));
+    lines.push(c.muted(`    ${fit("ACCOUNT", labelW)}  ${fit("EMAIL", emailW)}  ${showPlan ? `${fit("PLAN", planW)}  ` : ""}${fit("5H", usageW + 1 + resetW)}  ${fit("WEEK", usageW + 1 + resetW)}  STATUS`));
 
     const row = (account: Account) => {
       const chosen = keyOf(account) === selected;
@@ -440,7 +539,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
       const pointer = chosen ? bold(c.cyan("❯")) : " ";
       const dot = account.active ? c.ok("●") : " ";
       const label = chosen ? bold(c.ice(fit(account.label, labelW))) : text(fit(account.label, labelW));
-      const line = ` ${pointer}${dot} ${label}  ${text(fit(account.email, emailW))}  ${showPlan ? `${c.muted(fit(account.plan, planW))}  ` : ""}${usage(account.fiveHour)}  ${usage(account.weekly)}  ${c.purple(fit(account.resets ?? "", resetW))}  ${statusCell(account)}`;
+      const line = ` ${pointer}${dot} ${label}  ${text(fit(account.email, emailW))}  ${showPlan ? `${c.muted(fit(account.plan, planW))}  ` : ""}${usage(account.fiveHour)} ${reset(account.fiveHour, account.fiveHourResets, account.fiveHourIdle)}  ${usage(account.weekly)} ${reset(account.weekly, account.weeklyResets)}  ${statusCell(account)}`;
       return chosen ? bg(THEME.selBg)(pad(line, inner)) : line;
     };
     const section = (name: string, note: string) => `${bold(providerName(name.toLowerCase(), name))}  ${c.muted(note)}`;
@@ -468,7 +567,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
       bold(c.text(account.email || (account.provider === "google" ? (account.status === "logged_out" ? "signed out" : "Google sign-in") : "no login"))),
       c.muted(account.plan || (account.provider === "codex" ? "Codex" : account.provider === "google" ? "Google" : "")),
       "",
-      windowLine("5-hour", account.fiveHour, account.fiveHourResets),
+      account.fiveHourIdle ? `${c.muted("5-hour ")} ${bar(account.fiveHour, cells)}${c.muted("  not started (starts with the next message)")}` : windowLine("5-hour", account.fiveHour, account.fiveHourResets),
       windowLine("weekly", account.weekly, account.weeklyResets),
       "",
       `${c.muted("status ")} ${statusCell(account)}${account.disabled ? c.muted("  (out of rotation)") : ""}`,
@@ -496,7 +595,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
       ["↑ ↓  j k", "move between accounts"], ["⏎", "default action (switch / log in)"], ["/  :", "command box (type any dswap command)"],
       ["tab", "complete the suggestion"], ["esc", "close the command box / help"], ["?", "toggle this help"],
     ];
-    const lines = [bold(c.sky("Keys")), ...keys.map(([key, about]) => `  ${bold(c.cyan(fit(key!, 10)))}${c.text(about!)}`), "", bold(c.sky("Commands")) + c.muted("  same in the command box and in your shell (dswap …)"),
+    const lines = [bold(c.sky("Settings")), `  ${bold(c.cyan(fit("intro", 10)))}${c.text(`logo animation on start: ${logoAnimation()}`)}${c.muted("  (intro once|always|off)")}`, "", bold(c.sky("Keys")), ...keys.map(([key, about]) => `  ${bold(c.cyan(fit(key!, 10)))}${c.text(about!)}`), "", bold(c.sky("Commands")) + c.muted("  same in the command box and in your shell (dswap …)"),
       ...COMMANDS.map((command) => `  ${c.green(fit(`${command.name} ${command.args}`.trim(), 30))}${c.muted(command.about)}`)];
     return box("Help", lines, width, { right: c.muted("? or esc to close"), focus: true });
   }
@@ -528,14 +627,18 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     const tag = bg(THEME.tagBg)(bold(c.text(" DSWAP ")));
     const autoText = autoNow === "on" ? c.ok("● auto on") : autoNow === "installed" ? c.warn("● auto stopped") : autoNow === "unsupported" ? c.muted("auto n/a") : c.muted("○ auto off");
     const active = claude.find((account) => account.active);
-    const left = ` ${tag} ${autoText}  ${c.muted("·")}  ${c.muted("default")} ${bold(c.claude(active?.label ?? "-"))}  ${c.muted("·")}  ${c.claude(String(claude.filter((a) => a.selector !== "-").length))} ${c.muted("claude ·")} ${c.codex(String(codex.length))} ${c.muted("codex ·")} ${providerName("google", String(google.length))} ${c.muted("google")}`;
+    const left = ` ${tag} ${autoText}  ${primeNow === "on" ? c.ok("● prime on") : primeNow === "off" ? c.muted("○ prime off") : ""}  ${c.muted("·")}  ${c.muted("default")} ${bold(c.claude(active?.label ?? "-"))}  ${c.muted("·")}  ${c.claude(String(claude.filter((a) => a.selector !== "-").length))} ${c.muted("claude ·")} ${c.codex(String(codex.length))} ${c.muted("codex ·")} ${providerName("google", String(google.length))} ${c.muted("google")}`;
     const right = mode.kind === "command" ? c.muted("⏎ run · tab complete · ↑↓ pick · esc close ") : c.muted("/ command · ? help · q quit ");
     return `${left}${" ".repeat(Math.max(1, width - visible(left) - visible(right)))}${right}`;
   }
 
   /** Your dswap actions and cswap auto's log, newest first; repeated auto lines collapse into one. */
   function activityPanel(width: number, height: number): string[] {
-    const entries: Array<{ time: string; text: string; source: "you" | "auto"; count: number; tone: Tone }> = [];
+    const entries: Array<{ time: string; text: string; source: "you" | "auto" | "prime"; count: number; tone: Tone }> = [];
+    for (const line of primeLines) {
+      const text = line.slice(8).trim();
+      entries.push({ time: line.slice(0, 8), text, source: "prime", count: 1, tone: text.startsWith("failed") ? "error" : text.startsWith("primed") ? "ok" : "info" });
+    }
     for (const line of journal) {
       const time = line.slice(0, 8), text = line.slice(8).trim();
       const same = entries.find((entry) => entry.source === "auto" && entry.text === text);
@@ -546,7 +649,8 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     entries.sort((a, b) => b.time.localeCompare(a.time));
     const lines = entries.slice(0, Math.max(0, height - 2)).map((entry) => {
       const text = entry.tone === "error" ? c.bad(entry.text) : entry.tone === "ok" ? c.ok(entry.text) : entry.source === "you" ? c.text(entry.text) : c.muted(entry.text);
-      return `${c.muted(entry.time)}  ${entry.source === "you" ? c.cyan("you ") : c.purple("auto")}  ${text}${entry.count > 1 ? c.muted(` ×${entry.count}`) : ""}`;
+      const source = entry.source === "you" ? c.cyan("you  ") : entry.source === "prime" ? c.green("prime") : c.purple("auto ");
+      return `${c.muted(entry.time)}  ${source}  ${text}${entry.count > 1 ? c.muted(` ×${entry.count}`) : ""}`;
     });
     if (!lines.length) lines.push(c.muted(autoNow === "on" ? "No cswap auto activity yet." : "Nothing yet. Turn on cswap auto (t) to see its switches here."));
     return box("Activity", lines, width, { right: c.muted(autoNow === "on" ? "cswap auto log" : "this session"), fill: height - 2, titleColor: c.purple });
@@ -562,7 +666,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
   function render(): void {
     if (!running) return;
     const columns = stdout.columns || 100, rows = stdout.rows || 40;
-    const width = Math.min(columns - 1, 140);
+    const width = Math.min(columns - 1, MAX_WIDTH);
     const account = current();
 
     const suggestions = suggestionLines(width, 6);
@@ -652,9 +756,9 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
   };
 
   const restore = () => { if (running) stdout.write("\x1b[0m\x1b[?25h\x1b[?1049l"); };
-  function enter(): void {
+  function enter(clear = true): void {
     running = true;
-    stdout.write("\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J");
+    stdout.write(`\x1b[?1049h\x1b[?25l${clear ? "\x1b[H\x1b[2J" : ""}`);
     stdin.setRawMode(true);
     stdin.resume();
     stdin.on("keypress", handler);
@@ -672,6 +776,29 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     finish(0);
   }
 
+  /** The start animation; any key skips it. Accounts keep loading meanwhile. Off with DSWAP_NO_INTRO=1. */
+  async function playIntro(): Promise<boolean> {
+    const columns = stdout.columns || 100, rows = stdout.rows || 40;
+    if (process.env.DSWAP_NO_INTRO === "1" || columns < 30 || rows < 8) return false;
+    if (!demo && !shouldShowLogoAnimation()) return false;
+    if (!demo) markLogoAnimationShown();
+    stdout.write("\x1b[?1049h\x1b[?25l\x1b[H\x1b[2J");
+    stdin.setRawMode(true);
+    stdin.resume();
+    let skipped = false;
+    const skip = () => { skipped = true; };
+    stdin.once("data", skip);
+    const total = INTRO_MS.reveal + INTRO_MS.hold + INTRO_MS.move, start = Date.now();
+    while (!skipped) {
+      const ms = Math.min(total, Date.now() - start);
+      stdout.write(`\x1b[H${introFrame(ms, stdout.columns || columns, stdout.rows || rows).map((line) => `${line}\x1b[K`).join("\n")}\x1b[J`);
+      if (ms >= total) break;
+      await new Promise((resolveFrame) => setTimeout(resolveFrame, 16));
+    }
+    stdin.off("data", skip);
+    return true;
+  }
+
   emitKeypressEvents(stdin);
   process.on("exit", restore);
   const onResize = () => render();
@@ -679,8 +806,9 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
   const ticker = setInterval(() => { if (codexLoading || message?.tone === "busy") { spinner += 1; render(); } }, 120);
   const refresher = setInterval(() => { if (mode.kind === "normal" && running && !busy) void refresh(); }, 60_000);
 
-  enter();
   void refresh().catch((error) => { say(errorText(error), "error"); render(); });
+  const played = await playIntro();
+  enter(!played);
   const code = await new Promise<number>((resolveCode) => { finish = resolveCode; });
   clearInterval(ticker);
   clearInterval(refresher);

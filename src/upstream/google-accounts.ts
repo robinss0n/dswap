@@ -168,6 +168,24 @@ export async function probeGoogleAccount(account: GoogleAccountRef,
   }
 }
 
+/** A one-line prompt on the account's last-listed (smallest) model, which starts its 5-hour window. No tools. */
+export async function pingGoogleAccount(account: GoogleAccountRef, prompt: string,
+  open: (home: string) => AcpClient = (home) => openAgent(home)): Promise<{ model?: string }> {
+  const client = open(account.home);
+  try {
+    await initializeAgent(client);
+    await client.request("authenticate", { methodId: GOOGLE_AUTH_METHOD }, 45_000);
+    const session = await client.request("session/new", { cwd: probeCwd(account.home), mcpServers: [], _meta: { antigravity: { enabledTools: [] } } }, 120_000);
+    const models: string[] = (session?.models?.availableModels ?? []).map((model: any) => model?.modelId).filter((id: unknown): id is string => typeof id === "string");
+    const model = models.at(-1);
+    if (model) await client.request("session/set_model", { sessionId: session.sessionId, modelId: model }, 30_000);
+    await client.request("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: prompt }] }, 120_000);
+    return model ? { model } : {};
+  } finally {
+    client.close();
+  }
+}
+
 /** Highest usage across both windows; accounts without numbers sort last. */
 export function googleLoad(status: GoogleAccountStatus): number {
   const used = [status.fiveHour?.usedPercent, status.weekly?.usedPercent].filter((value): value is number => typeof value === "number");

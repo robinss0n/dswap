@@ -33,6 +33,12 @@ npm run accounts -- help           # every command
 - **Codex:** `dswap add codex <name>` runs `codex login` into a separate `CODEX_HOME` per account. The bridge picks the account with the most room.
 - **Google:** `dswap add google <name>` signs a Google AI Pro/Ultra (or free) account in through Google's own Antigravity agent, one folder per account. `dswap runtime google` installs or updates the agent.
 
+Each window shows its own reset. A 5-hour window marked `idle` has not started yet; it starts with the account's next message.
+
+**Window priming.** `dswap prime on` keeps every account's 5-hour window rolling: as soon as one ends (or while one is `idle`), a one-line ping on the cheapest model (Haiku, Codex at low effort, Gemini Flash low) starts the next, so resets come as early as possible. It runs every 5 minutes from a systemd user timer and catches up after the computer wakes. It skips quiet hours (`dswap prime quiet 3-5`), pauses after 8 hours without Droid use (`dswap prime idle 8`), and leaves accounts alone that are disabled, signed out or at 90% of their week (`dswap prime cap 90`). Pings never inherit API keys from your environment. `dswap prime --dry-run` shows what it would do. Priming helps when the 5-hour limit is what stops you; it adds nothing to a weekly limit. For Google, a Gemini ping starts only the Gemini window.
+
+The start animation follows Droid's `logoAnimation` rule: `once` (the default) plays on the next start and then turns itself off; `dswap intro always` or `dswap intro off` change it.
+
 Put the extra backends into Droid's model menu with the desktop installer:
 
 ```bash

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { listAccounts } from "../src/upstream/cswap.js";
+import { windowIdle } from "../src/upstream/prime.js";
 import { codexAccountsDir, listCodexAccounts, probeCodexAccount, validCodexAccount, DEFAULT_CODEX_ACCOUNT, type CodexAccountStatus } from "../src/upstream/codex-accounts.js";
 import { listGoogleAccounts, probeGoogleAccount, type GoogleAccountStatus } from "../src/upstream/google-accounts.js";
 
@@ -29,6 +30,8 @@ export interface Account {
   /** Time until the window that limits this account resets, e.g. `2d 6h`. */
   resets?: string;
   fiveHourResets?: string;
+  /** The 5-hour window has not started (no reset yet, or Google's drifting unused window). */
+  fiveHourIdle?: boolean;
   weeklyResets?: string;
   status: string;
   detail?: string;
@@ -66,11 +69,12 @@ export function claudeAccounts(accounts: ReturnType<typeof listAccounts>, now = 
       { used: week?.pct, resetsAtMs: week?.resetsAt ? Date.parse(week.resetsAt) : undefined }];
     const resets = bindingReset(windows, now);
     const fiveHourResets = countdown(windows[0]!.resetsAtMs, now), weeklyResets = countdown(windows[1]!.resetsAtMs, now);
+    const fiveHourIdle = windows[0]!.used !== undefined && windowIdle({ usedPercent: windows[0]!.used, resetsAt: windows[0]!.resetsAtMs }, now);
     return {
       provider: "claude", selector: String(account.number), label: account.alias ? `${account.number} ${account.alias}` : String(account.number),
       email: account.email ?? "", plan: account.organizationName ?? "",
       ...(typeof five?.pct === "number" ? { fiveHour: five.pct } : {}), ...(typeof week?.pct === "number" ? { weekly: week.pct } : {}),
-      ...(resets ? { resets } : {}), ...(fiveHourResets ? { fiveHourResets } : {}), ...(weeklyResets ? { weeklyResets } : {}), status,
+      ...(resets ? { resets } : {}), ...(fiveHourResets ? { fiveHourResets } : {}), ...(fiveHourIdle ? { fiveHourIdle } : {}), ...(weeklyResets ? { weeklyResets } : {}), status,
       ...(account.usageStatus === "relogin_required" ? { detail: "login expired: log in again, then cswap stores it" } : {}),
       active: account.active === true, disabled: account.disabled === true,
     } satisfies Account;
@@ -82,10 +86,11 @@ export function codexAccounts(statuses: CodexAccountStatus[], now = Date.now()):
     const windows = [status.fiveHour, status.weekly].map((window) => ({ used: window?.usedPercent, resetsAtMs: window?.resetsAt ? window.resetsAt * 1000 : undefined }));
     const resets = bindingReset(windows, now);
     const fiveHourResets = countdown(windows[0]!.resetsAtMs, now), weeklyResets = countdown(windows[1]!.resetsAtMs, now);
+    const fiveHourIdle = windows[0]!.used !== undefined && windowIdle({ usedPercent: windows[0]!.used, resetsAt: windows[0]!.resetsAtMs }, now);
     return {
       provider: "codex", selector: status.name, label: status.name, email: status.email ?? "", plan: status.plan ?? "",
       ...(status.fiveHour ? { fiveHour: status.fiveHour.usedPercent } : {}), ...(status.weekly ? { weekly: status.weekly.usedPercent } : {}),
-      ...(resets ? { resets } : {}), ...(fiveHourResets ? { fiveHourResets } : {}), ...(weeklyResets ? { weeklyResets } : {}), status: status.status,
+      ...(resets ? { resets } : {}), ...(fiveHourResets ? { fiveHourResets } : {}), ...(fiveHourIdle ? { fiveHourIdle } : {}), ...(weeklyResets ? { weeklyResets } : {}), status: status.status,
       ...(status.detail ? { detail: status.detail } : {}),
     } satisfies Account;
   });
@@ -96,13 +101,14 @@ export function googleAccounts(statuses: GoogleAccountStatus[], now = Date.now()
     const windows = [status.fiveHour, status.weekly].map((window) => ({ used: window?.usedPercent, resetsAtMs: window?.resetsAt }));
     const resets = bindingReset(windows, now);
     const fiveHourResets = countdown(windows[0]!.resetsAtMs, now), weeklyResets = countdown(windows[1]!.resetsAtMs, now);
+    const fiveHourIdle = windows[0]!.used !== undefined && windowIdle({ usedPercent: windows[0]!.used, resetsAt: windows[0]!.resetsAtMs }, now);
     const others = (status.groups ?? []).filter((group) => !/gemini/i.test(group.name))
       .map((group) => `${group.name}: ${[group.fiveHour && `5h ${Math.round(group.fiveHour.usedPercent)}%`, group.weekly && `week ${Math.round(group.weekly.usedPercent)}%`].filter(Boolean).join(" · ") || "-"}`);
     const detail = [status.detail, ...others].filter(Boolean).join(" · ");
     return {
       provider: "google", selector: status.name, label: status.name, email: "", plan: status.plan ?? "",
       ...(status.fiveHour ? { fiveHour: status.fiveHour.usedPercent } : {}), ...(status.weekly ? { weekly: status.weekly.usedPercent } : {}),
-      ...(resets ? { resets } : {}), ...(fiveHourResets ? { fiveHourResets } : {}), ...(weeklyResets ? { weeklyResets } : {}), status: status.status,
+      ...(resets ? { resets } : {}), ...(fiveHourResets ? { fiveHourResets } : {}), ...(fiveHourIdle ? { fiveHourIdle } : {}), ...(weeklyResets ? { weeklyResets } : {}), status: status.status,
       ...(detail ? { detail } : {}),
     } satisfies Account;
   });
@@ -212,7 +218,7 @@ export const AUTO_UNIT = "cswap-auto.service";
 const autoUnitPath = () => join(homedir(), ".config/systemd/user", AUTO_UNIT);
 
 /** systemctl --user needs the session bus; nothing else is passed through. */
-function systemctl(args: string[], quiet = false): number {
+export function systemctl(args: string[], quiet = false): number {
   const env = { HOME: homedir(), PATH: process.env.PATH, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid!()}`,
     ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}) };
   return spawnSync("systemctl", ["--user", ...args], { stdio: quiet ? "ignore" : "inherit", env }).status ?? 1;
@@ -298,6 +304,8 @@ export const USAGE = [
   "       dswap rename google <old> <new>",
   "       dswap runtime google           install or update Google's Antigravity agent",
   "       dswap auto on|off|status       keep cswap auto running in the background (switches before a limit, same session)",
+  "       dswap prime [on|off|status]    start each account's 5-hour window as soon as the last one ends (dswap prime help)",
+  "       dswap intro [once|always|off]  logo animation on start, like Droid's setting (default once: next start only)",
   "",
   "Claude commands also accept `claude` after the verb: dswap switch claude 4",
 ].join("\n");
@@ -315,6 +323,12 @@ export async function accounts(argv: string[], interactive = false): Promise<num
   if (!action || action === "--json" || action === "list" || action === "ls") { await overview(action === "--json" || rest.includes("--json")); return 0; }
   if (action === "help" || action === "--help" || action === "-h") { process.stdout.write(`${USAGE}\n`); return 0; }
   if (action === "auto") return auto(rest[0]);
+  if (action === "prime") { const { prime } = await import("./prime.js"); return prime(rest); }
+  if (action === "intro") {
+    const tui = await import("./dswap-tui.js");
+    process.stdout.write(`logo animation: ${rest[0] ? tui.setLogoAnimation(rest[0]) : tui.logoAnimation()}\n`);
+    return 0;
+  }
 
   const [provider, name] = rest;
   if (provider === "google" || (action === "runtime" && rest[0] === "google")) {

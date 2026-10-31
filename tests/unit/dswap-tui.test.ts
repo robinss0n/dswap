@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Account } from "../../scripts/accounts.js";
-import { box, clip, demoData, normalize, suggest, visible } from "../../scripts/dswap-tui.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { INTRO_MS, box, clip, demoData, introFrame, logoAnimation, markLogoAnimationShown, normalize, setLogoAnimation, shouldShowLogoAnimation, suggest, visible } from "../../scripts/dswap-tui.js";
 
 const claude: Account[] = [
   { provider: "claude", selector: "2", label: "2 work", email: "w@example.com", plan: "", status: "ok" },
@@ -57,5 +60,43 @@ describe("dswap demo", () => {
     expect(demo.claude.filter((account) => account.active)).toHaveLength(1);
     expect(demo.journal.every((line) => /^\d\d:\d\d:\d\d\s/.test(line) && !/@(?!example\.com)/.test(line))).toBe(true);
     expect(demo.journal.at(-1)).toMatch(/^12:00:00 /);
+  });
+});
+
+describe("dswap intro", () => {
+  const strip = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+  const logoRows = (lines: string[]) => lines.map((line, index) => ({ index, text: strip(line) })).filter((row) => row.text.trim());
+
+  it("draws the logo in the middle, then ends where the dashboard puts it", () => {
+    const start = logoRows(introFrame(0, 100, 30));
+    expect(start).toHaveLength(2);
+    expect(start[0]!.index).toBe(14);
+    expect(start[0]!.text.trim()).toHaveLength(1);
+    const drawn = logoRows(introFrame(INTRO_MS.reveal, 100, 30));
+    expect(drawn[0]!.text).toBe(`${" ".repeat(39)}█▀▄ █▀ █ █ █ ▄▀█ █▀█`);
+    const end = logoRows(introFrame(INTRO_MS.reveal + INTRO_MS.hold + INTRO_MS.move, 100, 30));
+    expect(end.map((row) => row.index)).toEqual([0, 1]);
+    expect(end[1]!.text).toBe("  █▄▀ ▄█ ▀▄▀▄▀ █▀█ █▀▀");
+  });
+});
+
+describe("dswap intro placement and setting", () => {
+  const strip = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+  it("centers over the dashboard, not a wide terminal", () => {
+    const row = introFrame(INTRO_MS.reveal, 300, 30).map(strip).find((line) => line.trim())!;
+    expect(row.indexOf("█")).toBe(60);
+  });
+
+  it("follows Droid's rule: once plays one time, always keeps playing, off never", () => {
+    const env = { DSWAP_SETTINGS: join(mkdtempSync(join(tmpdir(), "dswap-settings-")), "settings.json") };
+    expect(logoAnimation(env)).toBe("once");
+    expect(shouldShowLogoAnimation(env)).toBe(true);
+    markLogoAnimationShown(env);
+    expect(logoAnimation(env)).toBe("off");
+    expect(shouldShowLogoAnimation(env)).toBe(false);
+    setLogoAnimation("always", env);
+    markLogoAnimationShown(env);
+    expect(shouldShowLogoAnimation(env)).toBe(true);
+    expect(() => setLogoAnimation("sometimes", env)).toThrow(/once, always or off/);
   });
 });
