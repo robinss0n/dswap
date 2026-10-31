@@ -113,7 +113,7 @@ Description=factory-cc Bridge (Droid -> Claude Code)
 
 [Service]
 ExecStart=/bin/sh ${unitQuote(join(paths.state, "bridge-launcher.sh"))}
-WorkingDirectory=${unitQuote(paths.state)}
+WorkingDirectory=${paths.state.replaceAll("%", "%%")}
 ${Object.entries(serviceEnv(deps, install)).map(([key, value]) => `Environment=${unitQuote(`${key}=${value}`)}`).join("\n")}
 Restart=always
 RestartSec=30
