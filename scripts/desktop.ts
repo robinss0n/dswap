@@ -475,7 +475,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   desktop(process.argv.slice(2), {
     home: homedir(), repo: resolve(dirname(fileURLToPath(import.meta.url)), ".."), node: process.execPath,
     path: process.env.PATH ?? "/usr/bin:/bin", uid: process.getuid!(), platform: process.platform, env: process.env,
-    run: (command, args) => { const result = spawnSync(command, args, { encoding: "utf8", env: { HOME: homedir(), PATH: process.env.PATH }, stdio: ["ignore", "pipe", "pipe"] }); return { status: result.status ?? 1, stdout: result.stdout }; },
+    run: (command, args) => {
+      // systemctl --user reaches the user's systemd through the session bus; nothing else gets these.
+      const bus = command === "systemctl" ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid!()}`, ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}) } : {};
+      const result = spawnSync(command, args, { encoding: "utf8", env: { HOME: homedir(), PATH: process.env.PATH, ...bus }, stdio: ["ignore", "pipe", "pipe"] });
+      return { status: result.status ?? 1, stdout: result.stdout };
+    },
     assertPortFree: assertDesktopPortFree,
     // Progress such as the Cursor login URL goes to stderr; stdout stays the JSON result.
     stdout: (text) => { process.stderr.write(text); },
