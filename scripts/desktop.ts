@@ -248,7 +248,7 @@ function parseOptions(action: string, options: string[]): DesktopOptions {
       if (!isAbsolute(value)) throw new Error("--claude-config-dir must be an absolute profile directory.");
       parsed.claudeConfigDir = realpathSync(value);
     }
-    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code] [--codex-models id,id,...|none] [--codex-accounts default,auto,<name>,...]; restart [--models id,id,...] [--cursor-models ...] [--claude-config-dir /absolute/profile].");
+    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code] [--codex-models id,id,...|none] [--codex-accounts default,auto,<name>,...]; restart takes the same options except --port.");
   }
   return parsed;
 }
