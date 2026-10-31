@@ -21,6 +21,8 @@ export interface AppServerOptions {
   executable?: string;
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+  /** Process-level `-c key=value` overrides. Some settings (model_catalog_json) are read only at startup. */
+  configOverrides?: string[];
   onRequest?: ServerRequestHandler;
   onNotification?: NotificationHandler;
   /** Injected for tests; production spawns `codex app-server`. */
@@ -37,7 +39,7 @@ export class CodexAppServer {
   constructor(private readonly options: AppServerOptions = {}) {
     const env = { ...(options.env ?? process.env), ...(options.codexHome ? { CODEX_HOME: options.codexHome } : {}) };
     const command = options.executable ?? process.env.BRIDGE_CODEX_EXECUTABLE ?? "codex";
-    this.child = (options.spawnProcess ?? ((cmd, args, opts) => spawn(cmd, args, { ...opts, stdio: ["pipe", "pipe", "ignore"] })))(command, ["app-server"], { env, cwd: options.cwd });
+    this.child = (options.spawnProcess ?? ((cmd, args, opts) => spawn(cmd, args, { ...opts, stdio: ["pipe", "pipe", "ignore"] })))(command, [...(options.configOverrides ?? []).flatMap((item) => ["-c", item]), "app-server"], { env, cwd: options.cwd });
     this.exited = new Promise((resolve) => {
       this.child.once("exit", (code, signal) => { this.fail(new Error(`codex app-server exited (${signal ?? code})`)); resolve(); });
       this.child.once("error", (error) => { this.fail(error); resolve(); });

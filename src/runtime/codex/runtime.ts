@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { BridgeConfig } from "../../config.js";
 import type { Logger } from "../../logging.js";
 import { assistantMessage } from "../../protocol/messages.js";
@@ -52,6 +54,32 @@ interface LiveCodex {
   lastError?: string;
   /** Agent messages that streamed deltas; a completed message without any is added whole. */
   streamed: Set<string>;
+}
+
+/**
+ * Codex's model catalog adds tools no feature flag removes: multi_agent_version
+ * brings spawn_agent & co plus a 2.4k-char "you are /root of a team" prompt,
+ * apply_patch_tool_type an apply_patch that would bypass Droid's Edit, and the
+ * search fields a web search tool. The bridge hands app-server a copy of the
+ * account's catalog without them (absent = off; null fails to parse).
+ * tool_mode stays code_mode_only: Droid's tools are then called from Codex's
+ * `exec` cell, which runs them in parallel. "direct" made each call its own
+ * model round trip (3 reads: ~2 s apart instead of within 2 ms, codex-cli 0.165.0).
+ * Returns the copy's path, or undefined to keep Codex's own catalog.
+ */
+export function droidCodexCatalog(codexHome: string, outDir: string, account: string): string | undefined {
+  let catalog: { models?: Array<Record<string, unknown>> };
+  try { catalog = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8")); } catch { return undefined; }
+  if (!Array.isArray(catalog.models) || catalog.models.length === 0) return undefined;
+  const models = catalog.models.map((model) => {
+    const copy: Record<string, unknown> = { ...model, supports_search_tool: false, node_repl_disabled: true, experimental_supported_tools: [] };
+    // Absent means off: multi-agent "disabled", no apply_patch or web search tool.
+    for (const key of ["multi_agent_version", "multi_agent_reasoning_effort", "apply_patch_tool_type", "web_search_tool_type"]) delete copy[key];
+    return copy;
+  });
+  const path = join(outDir, `codex-catalog-${account}.json`);
+  writeFileSync(path, JSON.stringify({ models }), { mode: 0o600 });
+  return path;
 }
 
 export interface CodexRuntimeDependencies {
@@ -211,8 +239,9 @@ export class CodexRuntime implements BridgeRuntime {
     const account = await this.resolveAccount(route.account);
     const home = codexAccountHome(account);
     const cwd = resolveRequestCwd(input.headers, input.request, this.config);
+    const catalog = droidCodexCatalog(home, this.config.dataDir, account);
     const server = (this.deps.open ?? ((options) => new CodexAppServer(options)))({
-      codexHome: home, cwd,
+      codexHome: home, cwd, configOverrides: catalog ? [`model_catalog_json=${JSON.stringify(catalog)}`] : [],
       onRequest: (method, params) => this.serverRequest(live, input, method, params),
       onNotification: (method, params) => this.notification(live, method, params),
     });
@@ -223,7 +252,9 @@ export class CodexRuntime implements BridgeRuntime {
     const droidPrompt = systemText(input.request.system).trim();
     const started = await server.request<{ thread: { id: string } }>("thread/start", {
       cwd, model: route.model, approvalPolicy: "never", sandbox: "read-only", serviceName: "factory-cc",
-      ...(droidPrompt ? { developerInstructions: droidPrompt } : {}),
+      // Droid's prompt replaces Codex's own 21k-char harness prompt (skills,
+      // plugins, sub-agents, functions.exec) instead of sitting under it.
+      ...(droidPrompt ? { baseInstructions: droidPrompt } : {}),
       // The read-only sandbox only bounds Codex's own built-in tools, which are off.
       // Codex still told the model so twice: "the sandbox only permits reading
       // files" (permissions instructions) and a read-only permission_profile in
@@ -233,6 +264,11 @@ export class CodexRuntime implements BridgeRuntime {
       config: {
         features: CODEX_BUILTIN_FEATURES_OFF, web_search: "disabled",
         include_permissions_instructions: false, include_environment_context: false,
+        // More Codex-harness context Droid already covers or does not use: the
+        // collaboration-mode block, apps, the ~/.agents and ~/.codex skill
+        // catalog, and a second copy of AGENTS.md (Droid loads it itself).
+        include_collaboration_mode_instructions: false, include_apps_instructions: false,
+        project_doc_max_bytes: 0, skills: { include_instructions: false },
       },
       dynamicTools: (input.request.tools ?? []).map((tool) => ({ type: "function", name: tool.name, description: tool.description ?? tool.name, inputSchema: tool.input_schema ?? { type: "object", properties: {} } })),
     });

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type BridgeConfig } from "../../src/config.js";
 import type { Logger } from "../../src/logging.js";
 import { codexModels } from "../../src/models.js";
 import type { AppServerOptions, CodexAppServer } from "../../src/runtime/codex/app-server.js";
-import { CodexRuntime } from "../../src/runtime/codex/runtime.js";
+import { CodexRuntime, droidCodexCatalog } from "../../src/runtime/codex/runtime.js";
 import type { RuntimeRequest } from "../../src/runtime/types.js";
 import type { SessionRecord } from "../../src/sessions/state.js";
 import type { Message, MessagesRequest } from "../../src/types.js";
@@ -30,7 +30,7 @@ const session: SessionRecord = {
 
 function input(messages: Message[], extra: Partial<MessagesRequest> = {}): RuntimeRequest {
   return {
-    request: { model: MODEL, max_tokens: 1000, messages, tools: [{ name: "Read", input_schema: { type: "object" } }], ...extra } as MessagesRequest,
+    request: { model: MODEL, max_tokens: 1000, system: "You are Droid.", messages, tools: [{ name: "Read", input_schema: { type: "object" } }], ...extra } as MessagesRequest,
     role: "chat", session, headers: { "x-bridge-role": "chat" },
   };
 }
@@ -104,5 +104,45 @@ describe("CodexRuntime", () => {
     expect(fake.state.threadStart.config).toMatchObject({ include_permissions_instructions: false, include_environment_context: false });
     void fake.call("exec-a");
     await pending;
+  });
+
+  it("gives Codex Droid's prompt as its base prompt and drops Codex-harness context", async () => {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const pending = runtime.handle(input([{ role: "user", content: "go" }]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fake.state.threadStart.baseInstructions).toBe("You are Droid.");
+    expect(fake.state.threadStart.developerInstructions).toBeUndefined();
+    expect(fake.state.threadStart.config).toMatchObject({
+      include_collaboration_mode_instructions: false, include_apps_instructions: false,
+      project_doc_max_bytes: 0, skills: { include_instructions: false },
+    });
+    void fake.call("exec-a");
+    await pending;
+  });
+});
+
+describe("droidCodexCatalog", () => {
+  it("removes multi-agent, apply_patch and web search from every model, keeping code mode", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-home-"));
+    const out = mkdtempSync(join(tmpdir(), "codex-out-"));
+    dirs.push(home, out);
+    writeFileSync(join(home, "models_cache.json"), JSON.stringify({ etag: "x", models: [{
+      slug: "gpt-6.1-sol", tool_mode: "code_mode_only", multi_agent_version: "v2", multi_agent_reasoning_effort: "xhigh",
+      apply_patch_tool_type: "freeform", web_search_tool_type: "text_and_image", supports_search_tool: true,
+      node_repl_disabled: false, experimental_supported_tools: ["clock"], context_window: 500000,
+    }] }));
+    const path = droidCodexCatalog(home, out, "default")!;
+    const [model] = JSON.parse(readFileSync(path, "utf8")).models;
+    expect(model).toEqual({
+      slug: "gpt-6.1-sol", tool_mode: "code_mode_only", supports_search_tool: false, node_repl_disabled: true,
+      experimental_supported_tools: [], context_window: 500000,
+    });
+  });
+
+  it("keeps Codex's own catalog when there is no cache to copy", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-home-"));
+    dirs.push(home);
+    expect(droidCodexCatalog(home, home, "default")).toBeUndefined();
   });
 });
