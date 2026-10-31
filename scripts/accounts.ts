@@ -12,7 +12,10 @@ import { codexAccountsDir, listCodexAccounts, probeCodexAccount, validCodexAccou
  *   npm run accounts -- --json           the same as JSON
  *   npm run accounts -- add codex <name> new Codex account; runs `codex login` in its own CODEX_HOME
  *   npm run accounts -- remove codex <name>
- * Claude accounts are managed by cswap (`cswap add`, `cswap remove`).
+ *   npm run accounts -- login codex [name] log an existing Codex account in again (default: ~/.codex)
+ *   npm run accounts -- login claude     `claude auth login`, then `cswap add`: adds a new account or renews a dead one
+ *   npm run accounts -- remove claude <num|email>   `cswap remove`
+ * Claude accounts are stored by cswap; these commands only call it.
  */
 
 export interface AccountRow { provider: string; account: string; email: string; plan: string; fiveHour: string; weekly: string; status: string }
@@ -73,6 +76,32 @@ function addCodex(name: string): number {
   return 0;
 }
 
+function run(command: string, args: string[], env: NodeJS.ProcessEnv = process.env): boolean {
+  return spawnSync(command, args, { stdio: "inherit", env }).status === 0;
+}
+
+function loginCodex(name = DEFAULT_CODEX_ACCOUNT): number {
+  const account = listCodexAccounts().find((item) => item.name === name);
+  if (!account) throw new Error(`No Codex account named ${name}. Add it with: dswap add codex ${name}`);
+  process.stderr.write(`Logging in Codex account ${name} again (CODEX_HOME=${account.home}).\n`);
+  if (!run(process.env.BRIDGE_CODEX_EXECUTABLE ?? "codex", ["login"], { ...process.env, CODEX_HOME: account.home })) throw new Error("codex login did not finish.");
+  return 0;
+}
+
+/** cswap stores Claude accounts: log in with Claude Code, then let cswap add or renew that account. */
+function loginClaude(): number {
+  process.stderr.write("Step 1/2: log in with Claude Code. Pick the account you want to add or renew.\n");
+  if (!run(process.env.BRIDGE_CLAUDE_EXECUTABLE ?? "claude", ["auth", "login"])) throw new Error("claude auth login did not finish; cswap was not changed.");
+  process.stderr.write("Step 2/2: storing it in cswap.\n");
+  if (!run(process.env.BRIDGE_CSWAP_EXECUTABLE ?? "cswap", ["add"])) throw new Error("cswap add failed.");
+  return 0;
+}
+
+function removeClaude(selector: string): number {
+  if (!run(process.env.BRIDGE_CSWAP_EXECUTABLE ?? "cswap", ["remove", selector])) throw new Error("cswap remove failed.");
+  return 0;
+}
+
 function removeCodex(name: string): number {
   if (name === DEFAULT_CODEX_ACCOUNT) throw new Error("`default` is your normal ~/.codex login; log it out with `codex logout` instead.");
   const account = listCodexAccounts().find((item) => item.name === name);
@@ -86,8 +115,18 @@ export async function accounts(argv: string[]): Promise<number> {
   const [action, provider, name] = argv;
   if (!action || action === "--json") { await overview(action === "--json"); return 0; }
   if ((action === "add" || action === "remove") && provider === "codex" && name) return action === "add" ? addCodex(name) : removeCodex(name);
-  if ((action === "add" || action === "remove") && provider === "claude") throw new Error("Claude accounts are managed by cswap: cswap add / cswap remove.");
-  throw new Error("Usage: npm run accounts [-- --json] | add codex <name> | remove codex <name>");
+  if (action === "login" && provider === "codex") return loginCodex(name);
+  if ((action === "login" || action === "add") && provider === "claude") return loginClaude();
+  if (action === "remove" && provider === "claude" && name) return removeClaude(name);
+  throw new Error([
+    "Usage: dswap                          overview of every account",
+    "       dswap --json",
+    "       dswap add codex <name>         new Codex account (runs codex login)",
+    "       dswap login codex [name]       log a Codex account in again (default: your ~/.codex)",
+    "       dswap remove codex <name>",
+    "       dswap login claude             add a Claude account or renew a dead one (claude auth login + cswap add)",
+    "       dswap remove claude <num|email>",
+  ].join("\n"));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
