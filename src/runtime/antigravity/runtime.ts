@@ -9,7 +9,8 @@ import { historyMessageHashes } from "../../sessions/correlate.js";
 import { BridgeError, type ContentBlock, type Json, type Usage } from "../../types.js";
 import { resolveRequestCwd } from "../../workspace.js";
 import { AUTO_ACCOUNT } from "../../upstream/cswap.js";
-import { GOOGLE_AUTH_METHOD, googleAccountHome, initializeAgent, listGoogleAccounts, openAgent, pickGoogleAccount, probeGoogleAccount } from "../../upstream/google-accounts.js";
+import { droidAntigravity, REPLACE_MARKER, type AntigravityExecutable } from "../../upstream/antigravity-patch.js";
+import { antigravityExecutable, GOOGLE_AUTH_METHOD, googleAccountHome, initializeAgent, listGoogleAccounts, openAgent, pickGoogleAccount, probeGoogleAccount } from "../../upstream/google-accounts.js";
 import { toCursorToolResult } from "../cursor/tools.js";
 import { buildDynamicUserContent, buildInitialUserContent } from "../system-prompt.js";
 import { droidReasoningLevel, mapReasoningValue } from "../reasoning.js";
@@ -35,6 +36,8 @@ export const DROID_MCP_NAME = "droid";
  */
 export const TOOL_DEFER_MS = 160_000;
 /**
+ * Fallback only, for when the patched server is unavailable (see
+ * upstream/antigravity-patch.ts, which makes Droid's prompt replace Antigravity's).
  * Antigravity accepts a client prompt only as an appended section
  * (`_meta.antigravity.systemPrompt.append`, rendered last as
  * <user_system_instructions>); its own ~1.4k-word harness prompt (identity,
@@ -87,7 +90,9 @@ interface LiveGoogle {
 
 export interface AntigravityRuntimeDependencies {
   /** Injected for tests: start one account's agent. */
-  open?: (home: string, handlers: { onNotification: (method: string, params: any) => void; onRequest: (method: string, params: any) => Promise<unknown> }) => AcpClient;
+  open?: (home: string, handlers: { onNotification: (method: string, params: any) => void; onRequest: (method: string, params: any) => Promise<unknown> }, build: AntigravityExecutable) => AcpClient;
+  /** Injected for tests: which server to run and whether it replaces the system prompt. */
+  antigravity?: () => AntigravityExecutable;
   /** Injected for tests: choose a concrete account for `auto`. */
   pickAccount?: (exclude: ReadonlySet<string>) => Promise<string>;
   /** Injected for tests: resolve an account name to its GEMINI_HOME. */
@@ -103,6 +108,8 @@ export class AntigravityRuntime implements BridgeRuntime {
   private readonly now: () => number;
   private readonly mcp: DroidMcpHost;
   private closing = false;
+  private build?: AntigravityExecutable;
+  private patchFailed = false;
 
   constructor(private readonly config: BridgeConfig, private readonly logger: Logger, private readonly deps: AntigravityRuntimeDependencies = {}) {
     this.now = deps.now ?? Date.now;
@@ -235,16 +242,44 @@ export class AntigravityRuntime implements BridgeRuntime {
     return picked;
   }
 
+  /** The patched server (Droid's prompt replaces Antigravity's), made once per Antigravity version. */
+  private executable(): AntigravityExecutable {
+    if (this.patchFailed) { const original = this.build?.original ?? antigravityExecutable(); return { executable: original, replacesPrompt: false, original }; }
+    this.build ??= (this.deps.antigravity ?? (() => droidAntigravity(antigravityExecutable(), (error) => {
+      this.logger.warn("antigravity_patch_unavailable", { error: error instanceof Error ? error.message : String(error) });
+    })))();
+    return this.build;
+  }
+
   private async ensureSession(live: LiveGoogle, input: RuntimeRequest, route: { account: string; model: string }): Promise<void> {
     if (live.client && live.acpSessionId) return;
     const account = await this.resolveAccount(route.account);
+    const build = this.executable();
+    try {
+      await this.startAgent(live, input, account, build);
+    } catch (error) {
+      if (!build.replacesPrompt || (error instanceof BridgeError && error.code === "google_signed_out")) throw error;
+      // A patched server that cannot start a session must not take Google down:
+      // go back to the unmodified one (appended prompt) for the rest of this run.
+      this.logger.warn("antigravity_patch_failed", { error: error instanceof Error ? error.message : String(error) });
+      this.patchFailed = true;
+      live.client?.close();
+      live.disposeMcp?.();
+      Object.assign(live, { client: undefined, acpSessionId: undefined, disposeMcp: undefined, configOptions: undefined });
+      await this.startAgent(live, input, account, this.executable());
+    }
+    await this.selectSession(live, route, account);
+  }
+
+  /** Start the agent and its session, up to session/new. */
+  private async startAgent(live: LiveGoogle, input: RuntimeRequest, account: string, build: AntigravityExecutable): Promise<void> {
     const home = (this.deps.accountHome ?? googleAccountHome)(account);
     const cwd = resolveRequestCwd(input.headers, input.request, this.config);
     const handlers = {
       onNotification: (method: string, params: any) => this.notification(live, method, params),
       onRequest: (method: string, params: any) => this.agentRequest(method, params),
     };
-    const client = (this.deps.open ?? ((agentHome, h) => openAgent(agentHome, { cwd, ...h })))(home, handlers);
+    const client = (this.deps.open ?? ((agentHome, h, b) => openAgent(agentHome, { cwd, executable: b.executable, ...h })))(home, handlers, build);
     live.client = client;
     live.account = account;
     void client.exited.then(() => { if (!live.ended) { live.lastError ??= "Antigravity agent exited"; live.releasePark?.(); } });
@@ -259,13 +294,22 @@ export class AntigravityRuntime implements BridgeRuntime {
     live.disposeMcp = mcp.dispose;
     mkdirSync(cwd, { recursive: true });
     const droidPrompt = systemText(input.request.system).trim();
+    // Patched server: the marker makes Droid's prompt the whole system prompt.
+    const prompt = build.replacesPrompt ? `${REPLACE_MARKER}${droidPrompt}` : `${DROID_HOST_NOTICE}\n\n${droidPrompt}`;
     const session = await client.request<{ sessionId: string; configOptions?: ConfigOption[] }>("session/new", {
       cwd,
       mcpServers: [{ type: "http", name: DROID_MCP_NAME, url: mcp.url, headers: [] }],
-      _meta: { antigravity: { enabledTools: [], eagerMcpServers: [DROID_MCP_NAME], ...(droidPrompt ? { systemPrompt: { append: `${DROID_HOST_NOTICE}\n\n${droidPrompt}` } } : {}) } },
+      _meta: { antigravity: { enabledTools: [], eagerMcpServers: [DROID_MCP_NAME], ...(droidPrompt ? { systemPrompt: { append: prompt } } : {}) } },
     }, 120_000);
     live.acpSessionId = session.sessionId;
     live.configOptions = session.configOptions;
+    this.logger.info("google_agent_started", { account, replacesPrompt: build.replacesPrompt });
+  }
+
+  /** Mode and model for a new session. */
+  private async selectSession(live: LiveGoogle, route: { model: string }, account: string): Promise<void> {
+    const client = live.client!;
+    const session = { sessionId: live.acpSessionId! };
     // MCP tools are Droid's; Droid approves them, so the agent must not ask again.
     await client.request("session/set_mode", { sessionId: session.sessionId, modeId: "yolo" }, 30_000);
     // The model picker takes a base id (gemini-3.8-flash), with the thinking level

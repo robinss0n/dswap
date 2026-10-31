@@ -8,6 +8,7 @@ import { googleModels } from "../../src/models.js";
 import type { AcpClient } from "../../src/runtime/antigravity/acp-client.js";
 import type { DroidMcpHost } from "../../src/runtime/antigravity/droid-mcp-host.js";
 import { AntigravityRuntime, DROID_HOST_NOTICE } from "../../src/runtime/antigravity/runtime.js";
+import { REPLACE_MARKER } from "../../src/upstream/antigravity-patch.js";
 import type { RuntimeRequest } from "../../src/runtime/types.js";
 import type { SessionRecord } from "../../src/sessions/state.js";
 import type { MessagesRequest } from "../../src/types.js";
@@ -18,7 +19,7 @@ const logger: Logger = { info() {}, warn() {}, error() {} };
 afterEach(() => { dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })); });
 const tmp = () => { const dir = mkdtempSync(join(tmpdir(), "agy-")); dirs.push(dir); return dir; };
 
-function setup(initial: string, thinking = true, menu: string[] = [initial]) {
+function setup(initial: string, thinking = true, menu: string[] = [initial], replacesPrompt = false, patchedFails = false) {
   let model = initial;
   const project = tmp();
   const config: BridgeConfig = loadConfig({ dataDir: tmp(), mode: "sdk", authMode: "subscription", sdkCwd: project, models: googleModels(menu, ["main"]) });
@@ -28,10 +29,12 @@ function setup(initial: string, thinking = true, menu: string[] = [initial]) {
     ...(thinking ? [{ id: "thinking_level", currentValue: current, options: [{ value: "low" }, { value: "medium" }, { value: "high" }] }] : []),
   ];
   let level = "high";
-  const client = {
+  const opened: string[] = [];
+  const client = (executable: string) => ({
     exited: new Promise(() => {}), close() {}, notify() {},
     request: async (method: string, params: any) => {
       calls.push([method, params]);
+      if (method === "session/new" && patchedFails && executable === "patched") throw new Error("Internal error");
       if (method === "session/new") return { sessionId: "acp-1", configOptions: options(level) };
       if (method === "session/set_config_option") {
         if (params.configId === "thinking_level") level = params.value;
@@ -41,9 +44,11 @@ function setup(initial: string, thinking = true, menu: string[] = [initial]) {
       if (method === "session/prompt") return { stopReason: "end_turn" };
       return {};
     },
-  } as unknown as AcpClient;
+  }) as unknown as AcpClient;
   const mcpHost = { register: async () => ({ url: "http://127.0.0.1:1/mcp", dispose() {} }), close: async () => {} } as unknown as DroidMcpHost;
-  const runtime = new AntigravityRuntime(config, logger, { open: () => client, accountHome: () => tmp(), mcpHost });
+  const runtime = new AntigravityRuntime(config, logger, {
+    open: (_home, _handlers, build) => { opened.push(build.executable); return client(build.executable); },
+    antigravity: () => ({ executable: replacesPrompt ? "patched" : "original", replacesPrompt, original: "original" }), accountHome: () => tmp(), mcpHost });
   const session: SessionRecord = {
     bridgeSessionId: "bridge-google", role: "chat", state: "IDLE", model: `google:main:${initial}`, provider: "google",
     toolNames: ["Read"], createdAt: "", updatedAt: "", pendingToolIds: [], cancelRequested: false, notes: [],
@@ -58,7 +63,7 @@ function setup(initial: string, thinking = true, menu: string[] = [initial]) {
     const request = input();
     return { ...request, request: { ...request.request, model: `google:main:${next}` } };
   };
-  return { runtime, calls, input, switchTo, config };
+  return { runtime, calls, input, switchTo, config, opened };
 }
 
 describe("AntigravityRuntime", () => {
@@ -69,7 +74,7 @@ describe("AntigravityRuntime", () => {
     expect(ACP_CLIENT_INFO.name).toBe("zed");
   });
 
-  it("appends Droid's prompt behind the host notice and picks the model by base id", async () => {
+  it("without the patched server, appends Droid's prompt behind the host notice and picks the model by base id", async () => {
     const { runtime, calls, input } = setup("gemini-3.8-flash");
     await runtime.handle(input());
     const created = calls.find(([method]) => method === "session/new")![1];
@@ -101,5 +106,22 @@ describe("AntigravityRuntime", () => {
       { role: "user", content: "hi" }, { role: "assistant", content: "hello" }, { role: "user", content: "again" }] } });
     expect(calls).toContainEqual(["session/set_config_option", { sessionId: "acp-1", configId: "model", value: "claude-sonnet-4-6" }]);
     expect(calls.some(([method]) => method === "session/new")).toBe(false);
+  });
+
+  it("with the patched server, sends Droid's prompt behind the replace marker and nothing else", async () => {
+    const { runtime, calls, input, opened } = setup("gemini-3.8-flash", true, ["gemini-3.8-flash"], true);
+    await runtime.handle(input());
+    expect(opened).toEqual(["patched"]);
+    const created = calls.find(([method]) => method === "session/new")![1];
+    expect(created._meta.antigravity.systemPrompt.append).toBe(`${REPLACE_MARKER}You are Droid.`);
+  });
+
+  it("falls back to the unmodified server when the patched one cannot start a session", async () => {
+    const { runtime, calls, input, opened } = setup("gemini-3.8-flash", true, ["gemini-3.8-flash"], true, true);
+    const turn = await runtime.handle(input());
+    expect(turn.response.stop_reason).toBe("end_turn");
+    expect(opened).toEqual(["patched", "original"]);
+    const prompts = calls.filter(([method]) => method === "session/new").map(([, params]) => params._meta.antigravity.systemPrompt.append);
+    expect(prompts).toEqual([`${REPLACE_MARKER}You are Droid.`, `${DROID_HOST_NOTICE}\n\nYou are Droid.`]);
   });
 });
