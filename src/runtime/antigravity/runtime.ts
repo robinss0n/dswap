@@ -12,6 +12,7 @@ import { AUTO_ACCOUNT } from "../../upstream/cswap.js";
 import { GOOGLE_AUTH_METHOD, googleAccountHome, initializeAgent, listGoogleAccounts, openAgent, pickGoogleAccount, probeGoogleAccount } from "../../upstream/google-accounts.js";
 import { toCursorToolResult } from "../cursor/tools.js";
 import { buildDynamicUserContent, buildInitialUserContent } from "../system-prompt.js";
+import { droidReasoningLevel, mapReasoningValue } from "../reasoning.js";
 import type { BridgeRuntime, RetiredSession, RuntimeControl, RuntimeHostCall, RuntimeHostCompletion, RuntimeHostEnd, RuntimeRequest, RuntimeTurn, StreamSink } from "../types.js";
 import type { AcpClient } from "./acp-client.js";
 import { DroidMcpHost, type HostedResult, type HostedTool } from "./droid-mcp-host.js";
@@ -33,6 +34,15 @@ export const DROID_MCP_NAME = "droid";
  * with DEFERRED_RESULT; Droid's real result is then sent to the model as the next prompt.
  */
 export const TOOL_DEFER_MS = 160_000;
+/**
+ * Antigravity accepts a client prompt only as an appended section
+ * (`_meta.antigravity.systemPrompt.append`, rendered last as
+ * <user_system_instructions>); its own ~1.4k-word harness prompt (identity,
+ * messaging, transcripts, artifacts, communication style) always comes first and
+ * no ACP option removes it. This notice makes Droid's prompt the one that counts.
+ */
+export const DROID_HOST_NOTICE = "You are running inside Factory Droid, as Droid's model. Droid's system prompt follows this notice and is authoritative: where it differs from the instructions above (the Antigravity identity, messaging, conversation transcript, artifacts and communication style sections), follow Droid's. Antigravity's built-in tools (run_command, file viewing and editing, artifacts, subagents) are not available; call only the tools provided in this session. Droid runs them and the user approves them.";
+
 export const DEFERRED_RESULT = "Droid is still running this tool (it can take a while, for example while the user approves it). Do not call it again and do not guess its result. End your turn now; the result will arrive in the next message.";
 
 interface PendingTool {
@@ -48,11 +58,15 @@ interface PendingTool {
 }
 interface DeferredResult { name: string; content: string | ContentBlock[]; isError?: boolean }
 interface TurnOutcome { stopReason?: string; error?: Error; usage?: any }
+/** An ACP session config option (model, thinking_level, mode). Options may be grouped. */
+interface ConfigOption { id: string; currentValue?: string; options?: Array<{ value?: string; options?: Array<{ value?: string }> }> }
 
 interface LiveGoogle {
   client?: AcpClient;
   acpSessionId?: string;
   account?: string;
+  /** The session's config options as Antigravity last reported them. */
+  configOptions?: ConfigOption[];
   tools: HostedTool[];
   disposeMcp?: () => void;
   turn?: Promise<TurnOutcome>;
@@ -147,6 +161,8 @@ export class AntigravityRuntime implements BridgeRuntime {
       if (live.deferredResults.length) await this.resumeWithDeferred(live, input);
       else if (!live.turn) {
         await this.ensureSession(live, input, route);
+        await this.applyModel(live, route);
+        await this.applyReasoning(live, input);
         this.startTurn(live, input);
       }
       const turn = await this.finishOrPark(live, input, park);
@@ -243,18 +259,63 @@ export class AntigravityRuntime implements BridgeRuntime {
     live.disposeMcp = mcp.dispose;
     mkdirSync(cwd, { recursive: true });
     const droidPrompt = systemText(input.request.system).trim();
-    const session = await client.request<{ sessionId: string }>("session/new", {
+    const session = await client.request<{ sessionId: string; configOptions?: ConfigOption[] }>("session/new", {
       cwd,
       mcpServers: [{ type: "http", name: DROID_MCP_NAME, url: mcp.url, headers: [] }],
-      _meta: { antigravity: { enabledTools: [], eagerMcpServers: [DROID_MCP_NAME], ...(droidPrompt ? { systemPrompt: { append: droidPrompt } } : {}) } },
+      _meta: { antigravity: { enabledTools: [], eagerMcpServers: [DROID_MCP_NAME], ...(droidPrompt ? { systemPrompt: { append: `${DROID_HOST_NOTICE}\n\n${droidPrompt}` } } : {}) } },
     }, 120_000);
     live.acpSessionId = session.sessionId;
+    live.configOptions = session.configOptions;
     // MCP tools are Droid's; Droid approves them, so the agent must not ask again.
     await client.request("session/set_mode", { sessionId: session.sessionId, modeId: "yolo" }, 30_000);
-    await client.request("session/set_model", { sessionId: session.sessionId, modelId: route.model }, 30_000).catch((error: unknown) => {
-      throw new BridgeError(400, "unknown_model", `Google account ${account} cannot use ${route.model}: ${error instanceof Error ? error.message : error}`);
-    });
+    // The model picker takes a base id (gemini-3.8-flash), with the thinking level
+    // as its own option; set_model only knows the flat ids (gemini-3.8-flash-high)
+    // that older menus stored, so it stays the fallback.
+    try {
+      await this.setConfigOption(live, "model", route.model);
+    } catch {
+      await client.request("session/set_model", { sessionId: session.sessionId, modelId: route.model }, 30_000).catch((error: unknown) => {
+        throw new BridgeError(400, "unknown_model", `Google account ${account} cannot use ${route.model}: ${error instanceof Error ? error.message : error}`);
+      });
+    }
     this.logger.info("google_session_started", { account, model: route.model, acpSessionId: session.sessionId, tools: live.tools.length });
+  }
+
+  private async setConfigOption(live: LiveGoogle, configId: string, value: string): Promise<void> {
+    const result = await live.client!.request<{ configOptions?: ConfigOption[] }>("session/set_config_option", { sessionId: live.acpSessionId, configId, value }, 30_000);
+    if (result?.configOptions) live.configOptions = result.configOptions;
+  }
+
+  /**
+   * Droid can switch models inside a conversation; the session keeps going, so
+   * the new model has to be selected in Antigravity before the next turn.
+   */
+  private async applyModel(live: LiveGoogle, route: { model: string }): Promise<void> {
+    const current = live.configOptions?.find((item) => item.id === "model")?.currentValue;
+    if (!current || current === route.model) return;
+    try {
+      await this.setConfigOption(live, "model", route.model);
+    } catch (error) {
+      throw new BridgeError(400, "unknown_model", `Google account ${live.account} cannot switch to ${route.model}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+
+  /**
+   * Droid's reasoning selector -> the model's thinking_level, before each new
+   * turn. Models without that option (Claude, GPT-OSS on Antigravity) are left
+   * alone; a refused level keeps the current one rather than failing the turn.
+   */
+  private async applyReasoning(live: LiveGoogle, input: RuntimeRequest): Promise<void> {
+    const level = droidReasoningLevel(input.request);
+    const option = live.configOptions?.find((item) => item.id === "thinking_level");
+    if (!level || !option) return;
+    const allowed = (option.options ?? []).flatMap((item) => item.options ?? [item]).map((item) => item.value).filter((value): value is string => Boolean(value));
+    if (!allowed.length) return;
+    const wanted = mapReasoningValue(level, allowed);
+    if (option.currentValue === wanted) return;
+    await this.setConfigOption(live, "thinking_level", wanted).catch((error: unknown) => {
+      this.logger.warn("google_thinking_level_refused", { wanted, error: error instanceof Error ? error.message : String(error) });
+    });
   }
 
   private startTurn(live: LiveGoogle, input: RuntimeRequest, override?: Json[]): void {

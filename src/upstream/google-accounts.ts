@@ -71,11 +71,20 @@ export function openAgent(home: string, options: Omit<AcpClientOptions, "executa
   return new AcpClient({ executable: antigravityExecutable(), args: antigravityArgs(), ...options, env: antigravityEnv(home, options.env) });
 }
 
+/**
+ * The ACP client identity the bridge reports. Antigravity offers non-Gemini
+ * models (Claude Sonnet/Opus, GPT-OSS) only to clients on its allowlist
+ * (model_selection.supports_third_party_models: JetBrains, Android Studio,
+ * Zed, Xcode); any other name gets the Gemini-only list. Zed is the client
+ * whose ACP use matches the bridge's (no fs/terminal capabilities, MCP tools).
+ */
+export const ACP_CLIENT_INFO = { name: "zed", title: "Zed", version: "0.212.0" } as const;
+
 export async function initializeAgent(client: AcpClient): Promise<any> {
   return client.request("initialize", {
     protocolVersion: ANTIGRAVITY_PROTOCOL_VERSION,
     clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-    clientInfo: { name: "factory-cc", title: "factory-cc bridge", version: "0.1.0" },
+    clientInfo: ACP_CLIENT_INFO,
   }, 120_000);
 }
 

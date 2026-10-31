@@ -211,10 +211,12 @@ export function resolveSession(
   if (owners.length > 1) throw ambiguous("tool results belong to multiple sessions");
   if (owners[0]) {
     assertHostScope(owners[0]);
-    // Codex takes reasoning effort per turn (turn/start), not per process, so a
-    // level changed mid tool loop simply applies from the next turn on. Claude
-    // keeps the stricter rule: its effort is fixed for the running SDK process.
-    if (!(sessionProvider(owners[0]) === "codex" && canChangeReasoningLevel(owners[0]))) assertSelectedContext(owners[0]);
+    // Codex (turn/start effort) and Google (thinking_level before each turn) take
+    // reasoning per turn, not per process, so a level changed mid tool loop
+    // simply applies from the next turn on. Claude keeps the stricter rule: its
+    // effort is fixed for the running SDK process.
+    const perTurnReasoning = sessionProvider(owners[0]) === "codex" || sessionProvider(owners[0]) === "google";
+    if (!(perTurnReasoning && canChangeReasoningLevel(owners[0]))) assertSelectedContext(owners[0]);
     return { match: owners[0], reason: "tool-use-id" };
   }
 
@@ -269,7 +271,8 @@ export function resolveSession(
       // A replay is the same request again. The same messages under a changed
       // reasoning level are a new ask, not a replay (matching it only to reject
       // the changed level surfaced as session_context_changed).
-      if (!inHostScope(session) || isEnded(session) || session.contextHash !== compatibleContextHash(session)) return false;
+      // A different model is never a replay either: its answer was not asked for.
+      if (!inHostScope(session) || isEnded(session) || session.contextHash !== contextHash) return false;
       // Idle: the turn already finished. Waiting: the turn parked a tool and Droid
       // repeated that same request body. A busy generating session is not a replay.
       if (session.cancelRequested || (session.state !== "IDLE" && session.state !== "WAITING_DROID_TOOL")) return false;
