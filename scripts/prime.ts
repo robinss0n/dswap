@@ -10,6 +10,7 @@ import {
   PRIME_PROVIDERS, WINDOW_MS, decide, duration, globalPause, lastDroidActivity, loadPrimeConfig, loadPrimeState, needsProbe, parseQuiet,
   primeDir, primeLog, savePrimeConfig, savePrimeState, targetKey, windowIdle, type PrimeConfig, type PrimeProvider, type PrimeState, type PrimeTarget,
 } from "../src/upstream/prime.js";
+import { cachedProbe, forgetProbe } from "../src/upstream/probe-cache.js";
 import { systemctl } from "./accounts.js";
 
 const PROMPT = "Reply with just: OK";
@@ -57,7 +58,7 @@ async function gather(config: PrimeConfig, state: PrimeState, now: number): Prom
   if (config.providers.codex) {
     for (const ref of listCodexAccounts()) {
       if (skipCached("codex", ref.name)) continue;
-      const status = await probeCodexAccount(ref);
+      const status = await cachedProbe(`codex-${ref.name}`, () => probeCodexAccount(ref), { keep: (result) => result.status !== "error" });
       const target: PrimeTarget = {
         provider: "codex", account: ref.name, label: `codex ${ref.name}`, usable: status.status !== "logged_out" && status.status !== "error" && !!status.fiveHour,
         problem: status.fiveHour || status.status !== "ok" ? status.detail ?? status.status : "no 5-hour limit on this login",
@@ -71,7 +72,7 @@ async function gather(config: PrimeConfig, state: PrimeState, now: number): Prom
   if (config.providers.google) {
     for (const ref of listGoogleAccounts()) {
       if (skipCached("google", ref.name)) continue;
-      const status = await probeGoogleAccount(ref);
+      const status = await cachedProbe(`google-${ref.name}`, () => probeGoogleAccount(ref), { keep: (result) => result.status !== "error" });
       const target: PrimeTarget = {
         provider: "google", account: ref.name, label: `google ${ref.name}`, usable: status.status !== "logged_out" && status.status !== "error" && !!status.fiveHour,
         problem: status.fiveHour || status.status !== "ok" ? status.detail ?? status.status : "no 5-hour limit on this plan",
@@ -124,6 +125,7 @@ export async function primeOnce(options: { dryRun?: boolean; force?: boolean; se
       const model = await ping(target);
       state.lastPing[key] = Date.now();
       state.runningUntil[key] = Date.now() + WINDOW_MS;
+      forgetProbe(`${target.provider}-${target.account}`);
       primeLog(`primed ${target.label} (${decision.reason}, ${model}); next reset ~${new Date(Date.now() + WINDOW_MS).toTimeString().slice(0, 5)}`);
     } catch (error) {
       // Counts as a ping so a failing account is retried once per window, not every 5 minutes.

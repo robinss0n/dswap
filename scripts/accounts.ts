@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { listAccounts } from "../src/upstream/cswap.js";
 import { windowIdle } from "../src/upstream/prime.js";
+import { cachedProbe } from "../src/upstream/probe-cache.js";
 import { codexAccountsDir, listCodexAccounts, probeCodexAccount, validCodexAccount, DEFAULT_CODEX_ACCOUNT, type CodexAccountStatus } from "../src/upstream/codex-accounts.js";
 import { listGoogleAccounts, probeGoogleAccount, type GoogleAccountStatus } from "../src/upstream/google-accounts.js";
 
@@ -137,12 +138,15 @@ export function loadClaude(): Account[] {
   catch { return [{ provider: "claude", selector: "-", label: "-", email: "", plan: "", status: "cswap unavailable" }]; }
 }
 
-export async function loadCodex(): Promise<Account[]> {
-  return codexAccounts(await Promise.all(listCodexAccounts().map((account) => probeCodexAccount(account))));
+/** Codex and Google checks go through the shared cache: `ttlMs` is how old a result from another dswap may be. */
+export async function loadCodex(ttlMs = 0): Promise<Account[]> {
+  return codexAccounts(await Promise.all(listCodexAccounts().map((account) =>
+    cachedProbe(`codex-${account.name}`, () => probeCodexAccount(account), { ttlMs, keep: (status) => status.status !== "error" }))));
 }
 
-export async function loadGoogle(): Promise<Account[]> {
-  return googleAccounts(await Promise.all(listGoogleAccounts().map((account) => probeGoogleAccount(account))));
+export async function loadGoogle(ttlMs = 0): Promise<Account[]> {
+  return googleAccounts(await Promise.all(listGoogleAccounts().map((account) =>
+    cachedProbe(`google-${account.name}`, () => probeGoogleAccount(account), { ttlMs, keep: (status) => status.status !== "error" }))));
 }
 
 async function overview(json: boolean): Promise<void> {

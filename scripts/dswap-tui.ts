@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { emitKeypressEvents, type Key } from "node:readline";
 import { readPrimeLog } from "../src/upstream/prime.js";
+import { DEFAULT_TTL_MS } from "../src/upstream/probe-cache.js";
 import { primeServiceState, type PrimeServiceState } from "./prime.js";
 import { DEFAULT_CODEX_ACCOUNT } from "../src/upstream/codex-accounts.js";
 import { accounts as runCli, addCodex, auto, autoLog, autoState, cswap, loadClaude, loadCodex, loadGoogle, loginClaude, loginCodex, quickCswapArgs, removeCodex, type Account, type AutoState } from "./accounts.js";
@@ -114,6 +115,8 @@ function shimmer(text: string, glint: number): string {
 export const INTRO_MS = { reveal: 650, hold: 350, move: 500 };
 /** The dashboard never grows wider than this; on a wide terminal it keeps to the left. */
 export const MAX_WIDTH = 140;
+/** `r` takes a check another dswap made in the last few seconds instead of starting its own. */
+const MANUAL_TTL_MS = 15_000;
 
 // ── settings ─────────────────────────────────────────────────────────────────
 /** Same rule as Droid's `logoAnimation`: `once` plays the start animation one time, then becomes `off`. */
@@ -339,7 +342,8 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
   };
   const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-  async function refresh(): Promise<void> {
+  /** `ttlMs`: how old another dswap's account check may be (0 after an action, so it shows at once). */
+  async function refresh(ttlMs = 0): Promise<void> {
     if (demo) {
       ({ claude, codex, google, journal, prime: primeLines } = demoData());
       autoNow = "on";
@@ -358,7 +362,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     codexLoading = true;
     ensureSelection();
     render();
-    const [probedCodex, probedGoogle] = await Promise.all([loadCodex(), loadGoogle()]);
+    const [probedCodex, probedGoogle] = await Promise.all([loadCodex(ttlMs), loadGoogle(ttlMs)]);
     if (mine !== generation) return;
     codex = probedCodex;
     google = probedGoogle;
@@ -473,7 +477,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
         run: () => suspended(`dswap auto ${autoOn ? "off" : "on"}`, () => { auto(autoOn ? "off" : "on"); }, `cswap auto is ${autoOn ? "off" : "on"}.`) }]),
       ...(primeNow === "unsupported" ? [] : [{ keys: ["p"], hint: "p", label: primeNow === "on" ? "priming off" : "priming on", cli: `dswap prime ${primeNow === "on" ? "off" : "on"}`,
         run: () => suspended(`dswap prime ${primeNow === "on" ? "off" : "on"}`, () => runCli(["prime", primeNow === "on" ? "off" : "on"]), `Priming is ${primeNow === "on" ? "off" : "on"}.`) }]),
-      { keys: ["r"], hint: "r", label: "refresh", cli: "dswap list", run: async () => { say("Refreshed.", "ok"); await refresh(); } },
+      { keys: ["r"], hint: "r", label: "refresh", cli: "dswap list", run: async () => { say("Refreshed.", "ok"); await refresh(MANUAL_TTL_MS); } },
       { keys: ["?"], hint: "?", label: "help", cli: "dswap help", run: () => { help = !help; } },
       { keys: ["q", "escape"], hint: "q", label: "quit", cli: "", run: () => quit() },
     ];
@@ -485,7 +489,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     const argv = line.split(" ").filter(Boolean);
     const [verb, target, name] = argv;
     if (!verb) return;
-    if (verb === "refresh" || verb === "list" || verb === "ls") { say("Refreshed.", "ok"); return refresh(); }
+    if (verb === "refresh" || verb === "list" || verb === "ls") { say("Refreshed.", "ok"); return refresh(MANUAL_TTL_MS); }
     if (verb === "help" || verb === "?") { help = true; return; }
     if (verb === "quit" || verb === "exit" || verb === "q") return quit();
     if (verb === "tui" || verb === "ui") { say("You are in the dashboard already."); return; }
@@ -804,9 +808,9 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
   const onResize = () => render();
   stdout.on("resize", onResize);
   const ticker = setInterval(() => { if (codexLoading || message?.tone === "busy") { spinner += 1; render(); } }, 120);
-  const refresher = setInterval(() => { if (mode.kind === "normal" && running && !busy) void refresh(); }, 60_000);
+  const refresher = setInterval(() => { if (mode.kind === "normal" && running && !busy) void refresh(DEFAULT_TTL_MS); }, 60_000);
 
-  void refresh().catch((error) => { say(errorText(error), "error"); render(); });
+  void refresh(DEFAULT_TTL_MS).catch((error) => { say(errorText(error), "error"); render(); });
   const played = await playIntro();
   enter(!played);
   const code = await new Promise<number>((resolveCode) => { finish = resolveCode; });
