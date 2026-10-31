@@ -5,7 +5,7 @@ import { validAccount } from "./upstream/cswap.js";
 import { selectionFromConfig, type UpstreamSelection } from "./upstream/providers.js";
 
 /** Which runtime owns a menu entry or a session. Absent means Claude, including records written before Cursor existed. */
-export type ModelProvider = "claude" | "cursor" | "codex";
+export type ModelProvider = "claude" | "cursor" | "codex" | "google";
 
 /** One Cursor parameter pinned to an allowed value. Omitting these makes the SDK use each parameter's first allowed value. */
 export interface CursorModelParameter {
@@ -49,6 +49,23 @@ export function codexModels(models: string[], accounts: string[]): BridgeModel[]
     displayName: `Codex · ${model}${account === "default" ? "" : ` · ${account}`}` }))));
 }
 
+/** Google menu ids: `google:<account>:<model>`; account is a Google account name or `auto`. Runs through Antigravity. */
+export const GOOGLE_MODEL_PREFIX = "google:";
+
+export function googleFromModelId(id: string): { account: string; model: string } | undefined {
+  if (!id.startsWith(GOOGLE_MODEL_PREFIX)) return undefined;
+  const rest = id.slice(GOOGLE_MODEL_PREFIX.length), split = rest.indexOf(":");
+  const account = rest.slice(0, split), model = rest.slice(split + 1);
+  return split > 0 && validAccount(account) && validId(model) ? { account, model } : undefined;
+}
+
+/** One Google menu entry per account and model. Single-account menus leave the account out of the name. */
+export function googleModels(models: string[], accounts: string[]): BridgeModel[] {
+  return validateModels(accounts.flatMap((account) => models.map((model) => ({
+    id: `${GOOGLE_MODEL_PREFIX}${account}:${model}`, model, provider: "google" as const,
+    displayName: `Google · ${model}${accounts.length > 1 || account === "auto" ? ` · ${account}` : ""}` }))));
+}
+
 /** Claude menu ids pinned to a cswap account: `acct:<account>:<model>`, where account is a slot, alias or `auto`. */
 export const ACCOUNT_MODEL_PREFIX = "acct:";
 
@@ -70,7 +87,7 @@ export function withAccounts(models: BridgeModel[], accounts: string[]): BridgeM
 }
 
 export function providerFromModelId(id: string): ModelProvider {
-  return id.startsWith(CURSOR_MODEL_PREFIX) ? "cursor" : id.startsWith(CODEX_MODEL_PREFIX) ? "codex" : "claude";
+  return id.startsWith(CURSOR_MODEL_PREFIX) ? "cursor" : id.startsWith(CODEX_MODEL_PREFIX) ? "codex" : id.startsWith(GOOGLE_MODEL_PREFIX) ? "google" : "claude";
 }
 
 export interface RequestModel {
@@ -116,8 +133,11 @@ export function validateModels(models: BridgeModel[]): BridgeModel[] {
       || !item.displayName.trim() || item.displayName.length > 160 || /[\x00-\x1f\x7f]/.test(item.displayName) || seen.has(item.id)) {
       throw new BridgeError(400, "invalid_model_catalog", "Each model needs a unique ID, an actual model ID and a readable display name.");
     }
-    if (item.provider !== undefined && item.provider !== "claude" && item.provider !== "cursor" && item.provider !== "codex") {
-      throw new BridgeError(400, "invalid_model_catalog", "Each model provider must be claude, cursor or codex.");
+    if (item.provider !== undefined && item.provider !== "claude" && item.provider !== "cursor" && item.provider !== "codex" && item.provider !== "google") {
+      throw new BridgeError(400, "invalid_model_catalog", "Each model provider must be claude, cursor, codex or google.");
+    }
+    if (item.provider === "google" && googleFromModelId(item.id)?.model !== item.model) {
+      throw new BridgeError(400, "invalid_model_catalog", "Google model IDs look like google:<account>:<model>.");
     }
     if (item.provider === "codex" && codexFromModelId(item.id)?.model !== item.model) {
       throw new BridgeError(400, "invalid_model_catalog", "Codex model IDs look like codex:<account>:<model>.");
@@ -125,7 +145,7 @@ export function validateModels(models: BridgeModel[]): BridgeModel[] {
     const cursor = item.provider === "cursor" ? normalizeCursorSelection(item.cursor) : undefined;
     seen.add(item.id);
     return { id: item.id, model: item.model, displayName: item.displayName.trim(),
-      ...(item.provider === "cursor" ? { provider: "cursor" as const, cursor } : item.provider === "codex" ? { provider: "codex" as const } : item.provider === "claude" ? { provider: "claude" as const } : {}) };
+      ...(item.provider === "cursor" ? { provider: "cursor" as const, cursor } : item.provider === "codex" ? { provider: "codex" as const } : item.provider === "google" ? { provider: "google" as const } : item.provider === "claude" ? { provider: "claude" as const } : {}) };
   });
 }
 
@@ -194,7 +214,7 @@ export function resolveRequestModel(config: BridgeConfig, requestedModel: string
     routeKey: JSON.stringify({ authMode: config.authMode, model: model ?? null,
       baseUrl: selection?.provider.baseUrl ?? null, tokenEnv: selection?.provider.tokenEnv ?? null,
       ...(provider === "cursor" ? { provider, cursor: profile?.cursor ?? null } : {}),
-      ...(provider === "codex" ? { provider, id: profile?.id ?? requestedModel } : {}),
+      ...(provider === "codex" || provider === "google" ? { provider, id: profile?.id ?? requestedModel } : {}),
       ...(account ? { account } : {}) }),
   };
 }

@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import type { BridgeMode } from "./types.js";
 import { parseAuthMode, type AuthMode } from "./upstream/auth-env.js";
 import { canonicalWorkspacePath } from "./workspace.js";
-import { codexModels, modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
+import { codexModels, googleModels, modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
 
 export interface BridgeConfig {
   desktopProfile?: boolean;
@@ -63,6 +63,14 @@ function codexMenuEnv(): BridgeModel[] {
   if (!models) return [];
   const accounts = (env("BRIDGE_CODEX_ACCOUNTS") ?? "default").split(",").map((account) => account.trim());
   return codexModels(parseModelIds(models), accounts);
+}
+
+/** BRIDGE_GOOGLE_MODELS (+ BRIDGE_GOOGLE_ACCOUNTS, default `auto`) adds the Google (Antigravity) menu entries. */
+function googleMenuEnv(): BridgeModel[] {
+  const models = env("BRIDGE_GOOGLE_MODELS");
+  if (!models) return [];
+  const accounts = (env("BRIDGE_GOOGLE_ACCOUNTS") ?? "auto").split(",").map((account) => account.trim());
+  return googleModels(parseModelIds(models), accounts);
 }
 
 /** BRIDGE_ACCOUNTS adds the `acct:` copies the desktop installer put in Droid's menu. */
@@ -236,7 +244,7 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     models: overrides.models !== undefined ? validateModels(overrides.models)
       : mergeModelCatalog(
         withAccountsEnv(env("BRIDGE_MODELS") ? modelsFromIds(parseModelIds(env("BRIDGE_MODELS")!), authMode) : claudeConfig ? claudeConfigModels(claudeConfig).models : undefined),
-        [...(readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")) ?? []), ...codexMenuEnv()],
+        [...(readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")) ?? []), ...codexMenuEnv(), ...googleMenuEnv()],
       ),
   };
   for (const [name, value, minimum] of [

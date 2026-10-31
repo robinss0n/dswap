@@ -17,6 +17,7 @@ export class RouterRuntime implements BridgeRuntime {
     private readonly claude: BridgeRuntime,
     private readonly cursor?: BridgeRuntime,
     private readonly codex?: BridgeRuntime,
+    private readonly google?: BridgeRuntime,
   ) {}
 
   async handle(input: RuntimeRequest, sink?: StreamSink): Promise<RuntimeTurn> {
@@ -57,14 +58,15 @@ export class RouterRuntime implements BridgeRuntime {
     this.claude.setControl?.(control);
     this.cursor?.setControl?.(control);
     this.codex?.setControl?.(control);
+    this.google?.setControl?.(control);
   }
 
   describe(): Record<string, unknown> {
-    return { ...(this.claude.describe?.() ?? { kind: "sdk" }), cursor: this.cursor?.describe?.() ?? { enabled: false }, codex: this.codex?.describe?.() ?? { enabled: false } };
+    return { ...(this.claude.describe?.() ?? { kind: "sdk" }), cursor: this.cursor?.describe?.() ?? { enabled: false }, codex: this.codex?.describe?.() ?? { enabled: false }, google: this.google?.describe?.() ?? { enabled: false } };
   }
 
   protectedSessionIds(): string[] {
-    return [...(this.claude.protectedSessionIds?.() ?? []), ...(this.cursor?.protectedSessionIds?.() ?? []), ...(this.codex?.protectedSessionIds?.() ?? [])];
+    return [...(this.claude.protectedSessionIds?.() ?? []), ...(this.cursor?.protectedSessionIds?.() ?? []), ...(this.codex?.protectedSessionIds?.() ?? []), ...(this.google?.protectedSessionIds?.() ?? [])];
   }
 
   isSessionUsable(sessionId: string): boolean {
@@ -72,7 +74,7 @@ export class RouterRuntime implements BridgeRuntime {
   }
 
   async close(): Promise<void> {
-    const results = await Promise.allSettled([this.claude.close?.(), this.cursor?.close?.(), this.codex?.close?.()]);
+    const results = await Promise.allSettled([this.claude.close?.(), this.cursor?.close?.(), this.codex?.close?.(), this.google?.close?.()]);
     this.owners.clear();
     const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
     if (errors.length) throw new AggregateError(errors, "Runtime shutdown failed");
@@ -91,6 +93,10 @@ export class RouterRuntime implements BridgeRuntime {
     if (provider === "codex") {
       if (!this.codex) throw new BridgeError(400, "codex_unavailable", "No Codex runtime is configured for this model.");
       return this.codex;
+    }
+    if (provider === "google") {
+      if (!this.google) throw new BridgeError(400, "google_unavailable", "No Google runtime is configured for this model.");
+      return this.google;
     }
     if (provider === "cursor") {
       if (!this.cursor) throw new BridgeError(400, "cursor_unavailable", "No Cursor runtime is configured for this model.");

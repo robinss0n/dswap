@@ -8,6 +8,38 @@ In `sdk` mode, a persistent streaming-input `query()` is maintained for each ses
 
 This is an SDK integration approach inspired by T3, not official support, authorization, or an account-status guarantee. Results from third-party compatible endpoints such as GLM do not represent Claude models. See [Integration Alignment](docs/T3-ALIGNMENT.md) and [Limitations](docs/LIMITATIONS.md).
 
+## Several accounts: dswap (Claude, Codex, Google)
+
+`dswap` is a terminal dashboard for every subscription account the bridge can use. It shows each account's plan, 5-hour and weekly limits and when they reset, and lets you switch, sign in, rename and remove accounts. The screenshots use `dswap demo`, which shows made-up accounts and runs nothing.
+
+![dswap dashboard](docs/images/dswap-dashboard.png)
+
+| A Google account | The command box |
+| --- | --- |
+| ![Google account in dswap](docs/images/dswap-google.png) | ![dswap command box](docs/images/dswap-command.png) |
+
+```bash
+npm run accounts -- demo           # try the dashboard with made-up accounts
+npm run accounts                   # the real dashboard (or link it: ln -s ... ~/.local/bin/dswap)
+npm run accounts -- list           # plain table; --json for scripts
+npm run accounts -- help           # every command
+```
+
+- **Claude:** accounts are stored by [cswap](https://github.com/realiti4/claude-swap), which must be on your `PATH`. `dswap auto on` keeps `cswap auto` running as a systemd user service, so the default login moves to the account with the most room before one hits its limit.
+- **Codex:** `dswap add codex <name>` runs `codex login` into a separate `CODEX_HOME` per account. The bridge picks the account with the most room.
+- **Google:** `dswap add google <name>` signs a Google AI Pro/Ultra (or free) account in through Google's own Antigravity agent, one folder per account. `dswap runtime google` installs or updates the agent.
+
+Put the extra backends into Droid's model menu with the desktop installer:
+
+```bash
+npm run desktop -- restart --codex-models gpt-6.1-sol --google-models gemini-3.8-flash-high --google-accounts auto
+```
+
+Each account keeps its own sign-in folder under `~/.local/share/factory-cc-accounts/`. The bridge never reads or copies tokens.
+
+> [!WARNING]
+> **Google accounts: use at your own risk.** Google's [Antigravity Additional Terms](https://antigravity.google/terms/) forbid "using third party software, tools, or services to access the Service", and Google has [suspended accounts](https://github.com/google-gemini/gemini-cli/discussions/20632) for it (so far, tools that reused Antigravity's sign-in token). This bridge runs Google's unmodified agent over its official ACP interface, identifies itself honestly and never touches the token, but that does not make it approved. Bans so far applied to Antigravity / Gemini CLI access, not whole Google accounts. Through this bridge you get Gemini models only: Antigravity offers Claude/GPT models only to the editors on its allow-list (Zed, JetBrains, Android Studio, Xcode).
+
 ## Droid desktop (always-on)
 
 Run once in this repository (requires Node.js 22+ and an existing working Claude Code configuration):

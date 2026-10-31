@@ -6,8 +6,9 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { codexModels, modelsFromIds, parseModelIds, withAccounts, type BridgeModel } from "../src/models.js";
+import { codexModels, googleModels, modelsFromIds, parseModelIds, withAccounts, type BridgeModel } from "../src/models.js";
 import { listCodexAccounts } from "../src/upstream/codex-accounts.js";
+import { listGoogleAccounts } from "../src/upstream/google-accounts.js";
 import { coerceCursorCatalog, cursorMenuFromCatalog, formatCursorCatalog, type CursorCatalogItem } from "../src/runtime/cursor/catalog.js";
 import { CURSOR_LOGIN_COMMAND, cursorApiKey, cursorCredentialStatus, cursorExpiryWarning, formatCursorStatus, loginCursor, type CursorLogin } from "../src/runtime/cursor/credentials.js";
 import { cursorLoginFromSdk, loadCursorSdk, type CursorPlatformModule } from "../src/runtime/cursor/sdk-load.js";
@@ -26,6 +27,9 @@ const installationSchema = z.object({ version: z.literal(1), port: z.number().in
   // Codex menu: models, and accounts (absent: auto when there are several Codex accounts, else default).
   codexModels: z.array(z.string()).optional(),
   codexAccounts: z.array(z.string()).optional(),
+  // Google (Antigravity) menu: models, and accounts (absent: auto when there are several Google accounts, else the one).
+  googleModels: z.array(z.string()).optional(),
+  googleAccounts: z.array(z.string()).optional(),
   // Whose system prompt drives Claude; absent means Droid's.
   prompt: z.enum(["claude-code", "droid"]).optional(),
   // Cursor menu selector (`default`, `first-party`, or an explicit list). The key stays out of this file.
@@ -107,6 +111,7 @@ function serviceEnv(deps: DesktopDependencies, install: Installation): Record<st
     ...(install.cursorModels ? { BRIDGE_CURSOR_MODELS_FILE: paths.cursorMenu } : {}),
     ...(install.accounts ? { BRIDGE_ACCOUNTS: install.accounts.join(",") } : {}),
     ...(install.codexModels?.length ? { BRIDGE_CODEX_MODELS: install.codexModels.join(","), BRIDGE_CODEX_ACCOUNTS: codexAccountsFor(install).join(",") } : {}),
+    ...(install.googleModels?.length ? { BRIDGE_GOOGLE_MODELS: install.googleModels.join(","), BRIDGE_GOOGLE_ACCOUNTS: googleAccountsFor(install).join(",") } : {}),
     BRIDGE_PROMPT: install.prompt ?? "droid" };
 }
 /** systemd quoting: each assignment is double-quoted, with backslash, quote and % escaped. */
@@ -202,7 +207,8 @@ function syncModels(deps: DesktopDependencies, install: Installation, cursorMenu
   const claude = install.models ? modelsFromIds(install.models, "claude-config").map(explicitLabel)
     : claudeConfigModels(config).models.map((model) => ({ ...model, displayName: `Claude Code · ${model.displayName.replace(/^Claude /, "")}` }));
   const codex = install.codexModels?.length ? codexModels(install.codexModels, codexAccountsFor(install)) : [];
-  const models = [...(install.accounts ? withAccounts(claude, install.accounts) : claude), ...(cursorMenu ?? []), ...codex];
+  const google = install.googleModels?.length ? googleModels(install.googleModels, googleAccountsFor(install)) : [];
+  const models = [...(install.accounts ? withAccounts(claude, install.accounts) : claude), ...(cursorMenu ?? []), ...codex, ...google];
   // A literal key, not an apiKeyHelper: Droid strips executable credential
   // commands from the runtime settings that Mission workers and validators load.
   // The token only admits requests to this loopback Bridge.
@@ -227,7 +233,13 @@ function explicitLabel(model: BridgeModel): BridgeModel {
 function codexAccountsFor(install: Installation): string[] {
   return install.codexAccounts ?? (listCodexAccounts().length > 1 ? ["auto"] : ["default"]);
 }
-type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir" | "accounts" | "prompt" | "codexModels" | "codexAccounts">>;
+/** Pinned Google accounts, else `auto` when there are several Google sign-ins and that one when there is one. */
+function googleAccountsFor(install: Installation): string[] {
+  if (install.googleAccounts) return install.googleAccounts;
+  const accounts = listGoogleAccounts();
+  return accounts.length === 1 ? [accounts[0]!.name] : ["auto"];
+}
+type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir" | "accounts" | "prompt" | "codexModels" | "codexAccounts" | "googleModels" | "googleAccounts">>;
 function parseOptions(action: string, options: string[]): DesktopOptions {
   const parsed: DesktopOptions = {};
   for (let index = 0; index < options.length; index += 2) {
@@ -237,13 +249,15 @@ function parseOptions(action: string, options: string[]): DesktopOptions {
     else if (flag === "--accounts" && ["install", "restart"].includes(action) && parsed.accounts === undefined && value) parsed.accounts = value === "none" ? [] : value.split(",").map((account) => account.trim());
     else if (flag === "--codex-models" && ["install", "restart"].includes(action) && parsed.codexModels === undefined && value) parsed.codexModels = value === "none" ? [] : parseModelIds(value);
     else if (flag === "--codex-accounts" && ["install", "restart"].includes(action) && parsed.codexAccounts === undefined && value) parsed.codexAccounts = value.split(",").map((account) => account.trim());
+    else if (flag === "--google-models" && ["install", "restart"].includes(action) && parsed.googleModels === undefined && value) parsed.googleModels = value === "none" ? [] : parseModelIds(value);
+    else if (flag === "--google-accounts" && ["install", "restart"].includes(action) && parsed.googleAccounts === undefined && value) parsed.googleAccounts = value.split(",").map((account) => account.trim());
     else if (flag === "--prompt" && ["install", "restart"].includes(action) && parsed.prompt === undefined && (value === "droid" || value === "claude-code")) parsed.prompt = value;
     else if (flag === "--cursor-models" && ["install", "restart"].includes(action) && parsed.cursorModels === undefined && value) parsed.cursorModels = value;
     else if (flag === "--claude-config-dir" && ["install", "restart"].includes(action) && parsed.claudeConfigDir === undefined && value) {
       if (!isAbsolute(value)) throw new Error("--claude-config-dir must be an absolute profile directory.");
       parsed.claudeConfigDir = realpathSync(value);
     }
-    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code] [--codex-models id,id,...|none] [--codex-accounts default,auto,<name>,...]; restart takes the same options except --port.");
+    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code] [--codex-models id,id,...|none] [--codex-accounts default,auto,<name>,...] [--google-models id,id,...|none] [--google-accounts auto,<name>,...]; restart takes the same options except --port.");
   }
   return parsed;
 }
@@ -369,6 +383,7 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     return { installed: true, plistPresent: existsSync(paths.plist), loaded, port: install.port, claudeConfigDir: install.claudeConfigDir ?? join(deps.home, ".claude"), models: install.models ?? "follow Claude Code settings",
       accounts: install.accounts ?? [], prompt: install.prompt ?? "droid",
       codex: install.codexModels?.length ? { models: install.codexModels, accounts: codexAccountsFor(install) } : "off",
+      google: install.googleModels?.length ? { models: install.googleModels, accounts: googleAccountsFor(install) } : "off",
       repositoryPresent: existsSync(join(install.repo, "dist/index.js")), healthy: await deps.health(install.port),
       runtime: deps.runtime ? await deps.runtime(install.port, paths.admin) : null, caveat,
       cursor: {
@@ -415,8 +430,10 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     const install: Installation = { ...previous, node: realpathSync(deps.node), ...(parsed.models ? { models: parsed.models } : {}),
       ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
       ...(parsed.accounts ? { accounts: parsed.accounts } : {}), ...(parsed.prompt ? { prompt: parsed.prompt } : {}),
-      ...(parsed.codexModels ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}) };
+      ...(parsed.codexModels ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}),
+      ...(parsed.googleModels ? { googleModels: parsed.googleModels } : {}), ...(parsed.googleAccounts ? { googleAccounts: parsed.googleAccounts } : {}) };
     if (install.codexModels?.length === 0) delete install.codexModels;
+    if (install.googleModels?.length === 0) delete install.googleModels;
     if (install.accounts?.length === 0) delete install.accounts;
     if (cursorModels) install.cursorModels = cursorModels;
     else delete install.cursorModels;
@@ -441,7 +458,8 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
   const install: Installation = { version: 1, port, repo: realpathSync(deps.repo), node: realpathSync(deps.node), path: deps.path, ...(parsed.models ? { models: parsed.models } : {}), ...(cursor.menu ? { cursorModels: parsed.cursorModels } : {}),
     ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
     prompt: parsed.prompt ?? "droid",
-    ...(parsed.codexModels?.length ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}) };
+    ...(parsed.codexModels?.length ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}),
+    ...(parsed.googleModels?.length ? { googleModels: parsed.googleModels } : {}), ...(parsed.googleAccounts ? { googleAccounts: parsed.googleAccounts } : {}) };
   // Account copies are opt-in: with `dswap auto on`, the plain entries follow cswap's switches in place.
   if (parsed.accounts?.length) install.accounts = parsed.accounts;
   assertClaudeCredential(readDesktopClaudeConfig(deps, install));
