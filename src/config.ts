@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 import type { BridgeMode } from "./types.js";
 import { parseAuthMode, type AuthMode } from "./upstream/auth-env.js";
 import { canonicalWorkspacePath } from "./workspace.js";
-import { modelsFromIds, parseModelIds, validateModels, type BridgeModel } from "./models.js";
+import { modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
 
 export interface BridgeConfig {
   desktopProfile?: boolean;
@@ -55,6 +55,12 @@ export interface BridgeConfig {
   upstreamModel?: string;
   upstreamTokenEnv?: string;
   models?: BridgeModel[];
+}
+
+/** BRIDGE_ACCOUNTS adds the `acct:` copies the desktop installer put in Droid's menu. */
+function withAccountsEnv(models: BridgeModel[] | undefined): BridgeModel[] | undefined {
+  const accounts = env("BRIDGE_ACCOUNTS");
+  return models && accounts ? withAccounts(models, accounts.split(",").map((account) => account.trim())) : models;
 }
 
 function promptModeEnv(): "claude-code" | "droid" {
@@ -220,7 +226,7 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     upstreamTokenEnv: overrides.upstreamTokenEnv ?? env("BRIDGE_UPSTREAM_TOKEN_ENV"),
     models: overrides.models !== undefined ? validateModels(overrides.models)
       : mergeModelCatalog(
-        env("BRIDGE_MODELS") ? modelsFromIds(parseModelIds(env("BRIDGE_MODELS")!), authMode) : claudeConfig ? claudeConfigModels(claudeConfig).models : undefined,
+        withAccountsEnv(env("BRIDGE_MODELS") ? modelsFromIds(parseModelIds(env("BRIDGE_MODELS")!), authMode) : claudeConfig ? claudeConfigModels(claudeConfig).models : undefined),
         readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")),
       ),
   };

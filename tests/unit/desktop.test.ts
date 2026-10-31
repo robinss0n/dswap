@@ -321,3 +321,29 @@ it("refuses a missing pinned Claude profile before replacing the running service
   expect(files.map(path => readFileSync(path, "utf8"))).toEqual(before);
   expect(run.mock.calls.some(([, args]) => args[0] === "bootout")).toBe(false);
 });
+
+it("installs a systemd user service on Linux with Droid's prompt and cswap auto accounts by default", async () => {
+  const { deps, run } = fixture();
+  const accounts = JSON.stringify({ accounts: [{ number: 2, usageStatus: "ok" }] });
+  run.mockImplementation((command) => ({ status: 0, ...(command === "cswap" ? { stdout: accounts } : {}) }));
+  const linux = { ...deps, platform: "linux" };
+  const paths = desktopPaths(deps.home, "linux");
+  await desktop(["install", "--port", "19877"], linux);
+  expect(paths.plist).toBe(join(deps.home, ".config/systemd/user/factory-cc-bridge.service"));
+  expect(paths.state).toBe(join(deps.home, ".local/state/factory-cc"));
+  const unit = readFileSync(paths.plist, "utf8");
+  expect(unit).toContain("[Service]"); expect(unit).toContain("bridge-launcher.sh"); expect(unit).toContain("Restart=always");
+  expect(unit).toContain('Environment="BRIDGE_PROMPT=droid"'); expect(unit).toContain('Environment="BRIDGE_ACCOUNTS=auto"');
+  expect(unit).toContain('Environment="BRIDGE_PORT=19877"');
+  expect(run).toHaveBeenCalledWith("systemctl", ["--user", "daemon-reload"]);
+  expect(run).toHaveBeenLastCalledWith("systemctl", ["--user", "enable", "--now", "factory-cc-bridge.service"]);
+  const settings = JSON.parse(readFileSync(paths.settings, "utf8"));
+  expect(settings.customModels.map((model: { model: string }) => model.model)).toEqual(["sonnet", "acct:auto:sonnet"]);
+  expect(settings.customModels[1].displayName).toBe("Claude Code · Sonnet (fixture-sonnet) · auto");
+  await desktop(["restart", "--accounts", "none", "--prompt", "claude-code"], linux);
+  const restarted = readFileSync(paths.plist, "utf8");
+  expect(restarted).not.toContain("BRIDGE_ACCOUNTS"); expect(restarted).toContain('Environment="BRIDGE_PROMPT=claude-code"');
+  await desktop(["uninstall"], linux);
+  expect(run).toHaveBeenLastCalledWith("systemctl", ["--user", "disable", "--now", "factory-cc-bridge.service"]);
+  expect(existsSync(paths.plist)).toBe(false); expect(existsSync(paths.state)).toBe(false);
+});

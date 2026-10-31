@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { modelsFromIds, parseModelIds, type BridgeModel } from "../src/models.js";
+import { modelsFromIds, parseModelIds, withAccounts, type BridgeModel } from "../src/models.js";
 import { coerceCursorCatalog, cursorMenuFromCatalog, formatCursorCatalog, type CursorCatalogItem } from "../src/runtime/cursor/catalog.js";
 import { CURSOR_LOGIN_COMMAND, cursorApiKey, cursorCredentialStatus, cursorExpiryWarning, formatCursorStatus, loginCursor, type CursorLogin } from "../src/runtime/cursor/credentials.js";
 import { cursorLoginFromSdk, loadCursorSdk, type CursorPlatformModule } from "../src/runtime/cursor/sdk-load.js";
@@ -14,10 +14,16 @@ import { assertClaudeCredential, claudeConfigModels, readClaudeConfig } from "..
 import { configureDroid, DROID_BASE_MODEL } from "./configure-droid.js";
 
 const LABEL = "ai.factory-cc.bridge";
+/** Linux runs the same launcher as a systemd user service. */
+const UNIT = "factory-cc-bridge.service";
 const installationSchema = z.object({ version: z.literal(1), port: z.number().int().min(1).max(65535), repo: z.string(), node: z.string(), path: z.string(),
   // Explicit Droid menu models; absent means follow the Claude Code settings aliases.
   models: z.array(z.string()).optional(),
   claudeConfigDir: z.string().refine(isAbsolute, "Claude profile directory must be absolute").optional(),
+  // cswap accounts listed per Claude model (`auto` picks per process); absent means the default login only.
+  accounts: z.array(z.string()).optional(),
+  // Whose system prompt drives Claude; absent means Droid's.
+  prompt: z.enum(["claude-code", "droid"]).optional(),
   // Cursor menu selector (`default`, `first-party`, or an explicit list). The key stays out of this file.
   cursorModels: z.string().min(1).max(4000).optional() });
 type Installation = z.infer<typeof installationSchema>;
@@ -43,13 +49,15 @@ export interface DesktopDependencies {
   stdout?: (text: string) => void;
   now?: () => number;
 }
-export function desktopPaths(home: string) {
-  const state = join(home, "Library/Application Support/factory-cc");
+/** `plist` is the service definition: a LaunchAgent plist on macOS, a systemd user unit on Linux. */
+export function desktopPaths(home: string, platform = "darwin") {
+  const linux = platform === "linux";
+  const state = linux ? join(home, ".local/state/factory-cc") : join(home, "Library/Application Support/factory-cc");
   return { state, data: join(state, "bridge-data"), token: join(state, "client-token"),
     admin: join(state, "admin-token"), hook: join(state, "hook-token"),
     manifest: join(state, "installation.json"), models: join(state, "models.env"),
     cursorCatalog: join(state, "cursor-catalog.json"), cursorMenu: join(state, "cursor-menu.json"),
-    plist: join(home, `Library/LaunchAgents/${LABEL}.plist`), settings: join(home, ".factory/settings.json") };
+    plist: linux ? join(home, ".config/systemd/user", UNIT) : join(home, `Library/LaunchAgents/${LABEL}.plist`), settings: join(home, ".factory/settings.json") };
 }
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -84,15 +92,42 @@ function replacePrivateFile(path: string, value: string) {
   try { privateFile(temporary, value); renameSync(temporary, path); } finally { rmSync(temporary, { force: true }); }
 }
 function xml(value: string): string { return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;"); }
-export function desktopPlist(deps: DesktopDependencies, install: Installation): string {
-  const paths = desktopPaths(deps.home);
-  const env = { HOME: deps.home, PATH: install.path, BRIDGE_MODE: "sdk", BRIDGE_AUTH: "claude-config",
+function serviceEnv(deps: DesktopDependencies, install: Installation): Record<string, string> {
+  const paths = desktopPaths(deps.home, deps.platform);
+  return { HOME: deps.home, PATH: install.path, BRIDGE_MODE: "sdk", BRIDGE_AUTH: "claude-config",
     BRIDGE_PERMISSION: "ask", BRIDGE_DESKTOP: "1", BRIDGE_HOST: "127.0.0.1", BRIDGE_PORT: String(install.port),
     BRIDGE_DATA_DIR: paths.data, BRIDGE_CLIENT_TOKEN_FILE: paths.token,
     ...(install.claudeConfigDir ? { CLAUDE_CONFIG_DIR: install.claudeConfigDir } : {}),
     BRIDGE_ADMIN_TOKEN_FILE: paths.admin, BRIDGE_HOOK_TOKEN_FILE: paths.hook,
     ...(install.models ? { BRIDGE_MODELS: install.models.join(",") } : {}),
-    ...(install.cursorModels ? { BRIDGE_CURSOR_MODELS_FILE: paths.cursorMenu } : {}) };
+    ...(install.cursorModels ? { BRIDGE_CURSOR_MODELS_FILE: paths.cursorMenu } : {}),
+    ...(install.accounts ? { BRIDGE_ACCOUNTS: install.accounts.join(",") } : {}),
+    BRIDGE_PROMPT: install.prompt ?? "droid" };
+}
+/** systemd quoting: each assignment is double-quoted, with backslash, quote and % escaped. */
+const unitQuote = (value: string): string => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
+export function desktopUnit(deps: DesktopDependencies, install: Installation): string {
+  const paths = desktopPaths(deps.home, deps.platform);
+  return `[Unit]
+Description=factory-cc Bridge (Droid -> Claude Code)
+
+[Service]
+ExecStart=/bin/sh ${unitQuote(join(paths.state, "bridge-launcher.sh"))}
+WorkingDirectory=${unitQuote(paths.state)}
+${Object.entries(serviceEnv(deps, install)).map(([key, value]) => `Environment=${unitQuote(`${key}=${value}`)}`).join("\n")}
+Restart=always
+RestartSec=30
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target
+`;
+}
+export function desktopPlist(deps: DesktopDependencies, install: Installation): string {
+  if (deps.platform === "linux") return desktopUnit(deps, install);
+  const paths = desktopPaths(deps.home, deps.platform);
+  const env = serviceEnv(deps, install);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -107,7 +142,7 @@ export function desktopPlist(deps: DesktopDependencies, install: Installation): 
 </dict></plist>\n`;
 }
 function readInstallation(deps: DesktopDependencies): Installation {
-  const paths = desktopPaths(deps.home);
+  const paths = desktopPaths(deps.home, deps.platform);
   try {
     if (lstatSync(paths.state).isSymbolicLink() || lstatSync(paths.manifest).isSymbolicLink()) throw new Error("Refusing a linked desktop installation.");
     return installationSchema.parse(JSON.parse(readFileSync(paths.manifest, "utf8")));
@@ -118,15 +153,28 @@ function readInstallation(deps: DesktopDependencies): Installation {
 }
 function checkedRun(deps: DesktopDependencies, command: string, args: string[]) {
   const result = deps.run(command, args);
-  if (result.status !== 0) throw new Error(`${command === "launchctl" ? "launchctl " + args[0] : "Build"} failed (exit ${result.status}).`);
+  if (result.status !== 0) throw new Error(`${command === "launchctl" || command === "systemctl" ? `${command} ${args[0]}` : "Build"} failed (exit ${result.status}).`);
   return result;
 }
 function bootout(deps: DesktopDependencies) {
+  if (deps.platform === "linux") {
+    // disable --now stops the service; an absent unit is not an error here.
+    const result = deps.run("systemctl", ["--user", "disable", "--now", UNIT]);
+    if (result.status !== 0 && result.status !== 1 && result.status !== 5) throw new Error(`systemctl disable failed (exit ${result.status}); installation was preserved.`);
+    return;
+  }
   const result = deps.run("launchctl", ["bootout", `gui/${deps.uid}/${LABEL}`]);
   // launchctl reports ESRCH (3) when the service is already absent.
   if (result.status !== 0 && result.status !== 3) throw new Error(`launchctl bootout failed (exit ${result.status}); installation was preserved.`);
 }
 async function bootstrap(deps: DesktopDependencies, plist: string) {
+  if (deps.platform === "linux") {
+    for (const args of [["daemon-reload"], ["enable", "--now", UNIT]]) {
+      const result = deps.run("systemctl", ["--user", ...args]);
+      if (result.status !== 0) throw new Error(`systemctl ${args[0]} failed (exit ${result.status}).`);
+    }
+    return;
+  }
   // bootout returns before launchd has removed the old job, and bootstrap fails until it is gone.
   for (let attempt = 1; ; attempt++) {
     const result = deps.run("launchctl", ["bootstrap", `gui/${deps.uid}`, plist]);
@@ -142,13 +190,13 @@ function readDesktopClaudeConfig(deps: DesktopDependencies, install: Installatio
 }
 
 function syncModels(deps: DesktopDependencies, install: Installation, cursorMenu?: BridgeModel[]) {
-  const paths = desktopPaths(deps.home);
+  const paths = desktopPaths(deps.home, deps.platform);
   // Deliberately use exactly the environment launchd will receive. Never inherit shell credentials.
   const config = readDesktopClaudeConfig(deps, install);
   assertClaudeCredential(config);
   const claude = install.models ? modelsFromIds(install.models, "claude-config").map(explicitLabel)
     : claudeConfigModels(config).models.map((model) => ({ ...model, displayName: `Claude Code · ${model.displayName.replace(/^Claude /, "")}` }));
-  const models = [...claude, ...(cursorMenu ?? [])];
+  const models = [...(install.accounts ? withAccounts(claude, install.accounts) : claude), ...(cursorMenu ?? [])];
   // A literal key, not an apiKeyHelper: Droid strips executable credential
   // commands from the runtime settings that Mission workers and validators load.
   // The token only admits requests to this loopback Bridge.
@@ -169,19 +217,26 @@ function explicitLabel(model: BridgeModel): BridgeModel {
   const name = match ? `${match[1]![0]!.toUpperCase()}${match[1]!.slice(1)} ${match[2]}.${match[3]} (${model.id})` : model.id;
   return { ...model, displayName: `Claude Code · ${name}` };
 }
-type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir">>;
+/** Default to `auto` only when cswap answers with at least one stored account. */
+function hasCswapAccounts(deps: DesktopDependencies): boolean {
+  const result = deps.run("cswap", ["list", "--json"]);
+  try { return result.status === 0 && (JSON.parse(result.stdout ?? "") as { accounts?: unknown[] }).accounts!.length > 0; } catch { return false; }
+}
+type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir" | "accounts" | "prompt">>;
 function parseOptions(action: string, options: string[]): DesktopOptions {
   const parsed: DesktopOptions = {};
   for (let index = 0; index < options.length; index += 2) {
     const [flag, value] = [options[index], options[index + 1]];
     if (flag === "--port" && action === "install" && parsed.port === undefined && /^\d+$/.test(value ?? "")) parsed.port = Number(value);
     else if (flag === "--models" && ["install", "restart"].includes(action) && parsed.models === undefined && value) parsed.models = parseModelIds(value);
+    else if (flag === "--accounts" && ["install", "restart"].includes(action) && parsed.accounts === undefined && value) parsed.accounts = value === "none" ? [] : value.split(",").map((account) => account.trim());
+    else if (flag === "--prompt" && ["install", "restart"].includes(action) && parsed.prompt === undefined && (value === "droid" || value === "claude-code")) parsed.prompt = value;
     else if (flag === "--cursor-models" && ["install", "restart"].includes(action) && parsed.cursorModels === undefined && value) parsed.cursorModels = value;
     else if (flag === "--claude-config-dir" && ["install", "restart"].includes(action) && parsed.claudeConfigDir === undefined && value) {
       if (!isAbsolute(value)) throw new Error("--claude-config-dir must be an absolute profile directory.");
       parsed.claudeConfigDir = realpathSync(value);
     }
-    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile]; restart [--models id,id,...] [--cursor-models ...] [--claude-config-dir /absolute/profile].");
+    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code]; restart [--models id,id,...] [--cursor-models ...] [--claude-config-dir /absolute/profile].");
   }
   return parsed;
 }
@@ -197,7 +252,7 @@ function cursorClock(deps: DesktopDependencies): { env: NodeJS.ProcessEnv; now: 
 
 function cursorLoggedIn(deps: DesktopDependencies): boolean {
   const { env, now } = cursorClock(deps);
-  return cursorCredentialStatus(desktopPaths(deps.home).data, env, now).loggedIn;
+  return cursorCredentialStatus(desktopPaths(deps.home, deps.platform).data, env, now).loggedIn;
 }
 
 function cursorAbsentNotice(): string {
@@ -217,7 +272,7 @@ function cursorPreinstallOnly(state: string): boolean {
 
 async function fetchCursorCatalog(deps: DesktopDependencies): Promise<CursorCatalogItem[]> {
   const { env, now } = cursorClock(deps);
-  const key = cursorApiKey(desktopPaths(deps.home).data, env, now);
+  const key = cursorApiKey(desktopPaths(deps.home, deps.platform).data, env, now);
   if (!key) throw new Error(`No Cursor credential. Run ${CURSOR_LOGIN_COMMAND} first.`);
   const sdk = deps.cursorSdk ?? loadCursorSdk();
   try {
@@ -243,13 +298,13 @@ async function resolveCursorMenu(deps: DesktopDependencies, selector: string): P
 
 function readCursorMenuFile(deps: DesktopDependencies): BridgeModel[] | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(desktopPaths(deps.home).cursorMenu, "utf8")) as unknown;
+    const parsed = JSON.parse(readFileSync(desktopPaths(deps.home, deps.platform).cursorMenu, "utf8")) as unknown;
     return Array.isArray(parsed) ? parsed as BridgeModel[] : undefined;
   } catch { return undefined; }
 }
 
 function writeCursorMenu(deps: DesktopDependencies, menu: BridgeModel[], catalog?: readonly CursorCatalogItem[]): void {
-  const paths = desktopPaths(deps.home);
+  const paths = desktopPaths(deps.home, deps.platform);
   const snapshot = catalog ?? deps.cursorCatalog;
   if (snapshot) replacePrivateFile(paths.cursorCatalog, `${JSON.stringify(snapshot)}\n`);
   replacePrivateFile(paths.cursorMenu, `${JSON.stringify(menu)}\n`);
@@ -257,7 +312,7 @@ function writeCursorMenu(deps: DesktopDependencies, menu: BridgeModel[], catalog
 
 async function cursorDesktop(args: string[], deps: DesktopDependencies): Promise<Record<string, unknown>> {
   const [sub, filter] = args;
-  const paths = desktopPaths(deps.home);
+  const paths = desktopPaths(deps.home, deps.platform);
   const env = deps.env ?? {};
   const now = deps.now?.() ?? Date.now();
   if (sub === "status") {
@@ -290,19 +345,22 @@ async function cursorDesktop(args: string[], deps: DesktopDependencies): Promise
 export async function desktop(argv: string[], deps: DesktopDependencies): Promise<Record<string, unknown>> {
   const [action, ...options] = argv;
   if (!["install", "uninstall", "status", "restart", "cursor"].includes(action ?? "")) throw new Error("Usage: npm run desktop -- install [--port 18787] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] | uninstall | status | restart [--models id,id,...] [--cursor-models ...] [--claude-config-dir /absolute/profile] | cursor login | cursor status | cursor models [filter]");
-  if (deps.platform !== "darwin") throw new Error("Desktop LaunchAgent installation requires macOS.");
+  if (deps.platform !== "darwin" && deps.platform !== "linux") throw new Error("Desktop installation needs macOS (LaunchAgent) or Linux (systemd user service).");
   if (action === "cursor") return cursorDesktop(options, deps);
   const parsed = parseOptions(action!, options);
-  const paths = desktopPaths(deps.home), domain = `gui/${deps.uid}`;
+  const paths = desktopPaths(deps.home, deps.platform), domain = `gui/${deps.uid}`;
   const caveat = "The service waits with backoff while /Volumes/Workspace is unmounted or required files are unavailable. Node and the repository must return at their installed paths.";
   if (action === "status") {
     const install = readInstallation(deps);
-    const loaded = deps.run("launchctl", ["print", `${domain}/${LABEL}`]).status === 0;
+    const loaded = deps.platform === "linux"
+      ? deps.run("systemctl", ["--user", "is-active", "--quiet", UNIT]).status === 0
+      : deps.run("launchctl", ["print", `${domain}/${LABEL}`]).status === 0;
     const scriptMode = scriptToolModels(deps.home).includes(DROID_BASE_MODEL);
     const { env, now } = cursorClock(deps);
     const cursorStatus = cursorCredentialStatus(paths.data, env, now);
     const cursorWarning = cursorExpiryWarning(cursorStatus, now);
     return { installed: true, plistPresent: existsSync(paths.plist), loaded, port: install.port, claudeConfigDir: install.claudeConfigDir ?? join(deps.home, ".claude"), models: install.models ?? "follow Claude Code settings",
+      accounts: install.accounts ?? [], prompt: install.prompt ?? "droid",
       repositoryPresent: existsSync(join(install.repo, "dist/index.js")), healthy: await deps.health(install.port),
       runtime: deps.runtime ? await deps.runtime(install.port, paths.admin) : null, caveat,
       cursor: {
@@ -347,7 +405,9 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
       cursorModels = menu ? previous.cursorModels : undefined;
     } else cursorModels = undefined;
     const install: Installation = { ...previous, node: realpathSync(deps.node), ...(parsed.models ? { models: parsed.models } : {}),
-      ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}) };
+      ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
+      ...(parsed.accounts ? { accounts: parsed.accounts } : {}), ...(parsed.prompt ? { prompt: parsed.prompt } : {}) };
+    if (install.accounts?.length === 0) delete install.accounts;
     if (cursorModels) install.cursorModels = cursorModels;
     else delete install.cursorModels;
     // The LaunchAgent runs dist/. Rebuild so the restarted service runs the current source, not a stale build.
@@ -369,7 +429,10 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     ? await resolveCursorMenu(deps, parsed.cursorModels)
     : cursorLoggedIn(deps) ? {} : { warning: cursorAbsentNotice() };
   const install: Installation = { version: 1, port, repo: realpathSync(deps.repo), node: realpathSync(deps.node), path: deps.path, ...(parsed.models ? { models: parsed.models } : {}), ...(cursor.menu ? { cursorModels: parsed.cursorModels } : {}),
-    ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}) };
+    ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
+    prompt: parsed.prompt ?? "droid" };
+  const accounts = parsed.accounts ?? (hasCswapAccounts(deps) ? ["auto"] : []);
+  if (accounts.length) install.accounts = accounts;
   assertClaudeCredential(readDesktopClaudeConfig(deps, install));
   checkedRun(deps, deps.node, [join(deps.repo, "node_modules/typescript/bin/tsc"), "-p", join(deps.repo, "tsconfig.build.json")]);
   if (!existsSync(join(install.repo, "dist/index.js"))) throw new Error("Missing built dist/index.js. Run npm run build.");
