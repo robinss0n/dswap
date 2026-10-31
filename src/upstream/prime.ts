@@ -156,9 +156,13 @@ export function primeLog(text: string, env: NodeJS.ProcessEnv = process.env, dat
 /** Today's log lines as `HH:MM:SS message`, newest last. */
 export function readPrimeLog(lines = 40, env: NodeJS.ProcessEnv = process.env, date = new Date()): string[] {
   const path = join(primeDir(env), "prime.log");
-  if (!existsSync(path)) return [];
+  return existsSync(path) ? primeLogLines(readFileSync(path, "utf8"), lines, date) : [];
+}
+
+/** Today's lines of a priming log, without the date. */
+export function primeLogLines(text: string, lines = 40, date = new Date()): string[] {
   const today = stamp(date).slice(0, 10);
-  return readFileSync(path, "utf8").split("\n").filter((line) => line.startsWith(today)).slice(-lines).map((line) => line.slice(11));
+  return text.split("\n").filter((line) => line.startsWith(today)).slice(-lines).map((line) => line.slice(11));
 }
 
 /**

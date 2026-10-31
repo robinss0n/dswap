@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { emitKeypressEvents, type Key } from "node:readline";
 import { readPrimeLog } from "../src/upstream/prime.js";
-import { DEFAULT_TTL_MS } from "../src/upstream/probe-cache.js";
+import { DEFAULT_TTL_MS, cachedProbe } from "../src/upstream/probe-cache.js";
+import { fetchRemotePrime, setRemotePrime, type RemotePrime } from "../src/upstream/remote-prime.js";
 import { primeServiceState, type PrimeServiceState } from "./prime.js";
 import { DEFAULT_CODEX_ACCOUNT } from "../src/upstream/codex-accounts.js";
 import { accounts as runCli, addCodex, auto, autoLog, autoState, cswap, loadClaude, loadCodex, loadGoogle, loginClaude, loginCodex, quickCswapArgs, removeCodex, type Account, type AutoState } from "./accounts.js";
@@ -121,7 +122,11 @@ const MANUAL_TTL_MS = 15_000;
 // ── settings ─────────────────────────────────────────────────────────────────
 /** Same rule as Droid's `logoAnimation`: `once` plays the start animation one time, then becomes `off`. */
 export type LogoAnimation = "once" | "always" | "off";
-export interface DswapSettings { logoAnimation?: LogoAnimation }
+export interface DswapSettings {
+  logoAnimation?: LogoAnimation;
+  /** SSH name of a machine that primes too (`dswap prime server <name>`); its state shows in the dashboard. */
+  primeServer?: string;
+}
 
 export function settingsPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.DSWAP_SETTINGS ?? join(env.HOME ?? homedir(), ".local/share/factory-cc-accounts/dswap-settings.json");
@@ -131,7 +136,9 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): DswapSetting
 }
 export function saveSettings(patch: DswapSettings, env: NodeJS.ProcessEnv = process.env): void {
   mkdirSync(dirname(settingsPath(env)), { recursive: true });
-  writeFileSync(settingsPath(env), `${JSON.stringify({ ...loadSettings(env), ...patch }, null, 2)}\n`);
+  const next: Record<string, unknown> = { ...loadSettings(env), ...patch };
+  for (const key of Object.keys(next)) if (next[key] === undefined) delete next[key];
+  writeFileSync(settingsPath(env), `${JSON.stringify(next, null, 2)}\n`);
 }
 export const logoAnimation = (env: NodeJS.ProcessEnv = process.env): LogoAnimation => loadSettings(env).logoAnimation ?? "once";
 export const shouldShowLogoAnimation = (env: NodeJS.ProcessEnv = process.env) => logoAnimation(env) !== "off";
@@ -218,6 +225,7 @@ export const COMMANDS: Command[] = [
   { name: "prime off", args: "", about: "stop priming" },
   { name: "prime", args: "", about: "prime now: ping accounts whose 5-hour window is not running" },
   { name: "prime status", args: "", about: "priming settings and last pings" },
+  { name: "prime server", args: "<ssh-name|off>", about: "also show priming on another machine (P toggles it)" },
   { name: "prime quiet", args: "<3-5|off>", about: "no pings in these hours" },
   { name: "intro", args: "<once|always|off>", about: "the logo animation on start (once: next start only)" },
   { name: "refresh", args: "", about: "reload every account" },
@@ -310,6 +318,8 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
   let journal: string[] = [];
   let primeNow: PrimeServiceState = "off";
   let primeLines: string[] = [];
+  let serverHost: string | undefined;
+  let server: RemotePrime | undefined;
   let generation = 0;
   let spinner = 0;
   let running = false;
@@ -359,13 +369,17 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     journal = autoNow === "on" || autoNow === "installed" ? autoLog() : [];
     primeNow = primeServiceState();
     primeLines = readPrimeLog();
+    const host = loadSettings().primeServer;
+    if (host !== serverHost) { serverHost = host; server = undefined; }
     codexLoading = true;
     ensureSelection();
     render();
-    const [probedCodex, probedGoogle] = await Promise.all([loadCodex(ttlMs), loadGoogle(ttlMs)]);
+    const [probedCodex, probedGoogle, probedServer] = await Promise.all([loadCodex(ttlMs), loadGoogle(ttlMs),
+      host ? cachedProbe(`server-${host}`, () => fetchRemotePrime(host), { ttlMs, keep: (result) => result.state !== "unreachable" }) : undefined]);
     if (mine !== generation) return;
     codex = probedCodex;
     google = probedGoogle;
+    server = probedServer;
     codexLoading = false;
     ensureSelection();
     render();
@@ -461,6 +475,16 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     ];
   }
 
+  function serverAction(host: string): Action {
+    const on = server?.state === "on";
+    const cli = `ssh ${host} dswap prime ${on ? "off" : "on"}`;
+    return { keys: ["P"], hint: "P", label: `${host} priming ${on ? "off" : "on"}`, cli, run: () => {
+      if (!server) return say(`Still checking ${host}; try again in a moment.`);
+      if (server.state === "unreachable" || server.state === "missing" || server.state === "unsupported") return say(`${host}: ${server.detail ?? server.state}.`, "error");
+      return suspended(cli, () => setRemotePrime(host, !on), `Priming on ${host} is ${on ? "off" : "on"}.`);
+    } };
+  }
+
   function generalActions(): Action[] {
     const autoOn = autoNow === "on";
     return [
@@ -477,6 +501,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
         run: () => suspended(`dswap auto ${autoOn ? "off" : "on"}`, () => { auto(autoOn ? "off" : "on"); }, `cswap auto is ${autoOn ? "off" : "on"}.`) }]),
       ...(primeNow === "unsupported" ? [] : [{ keys: ["p"], hint: "p", label: primeNow === "on" ? "priming off" : "priming on", cli: `dswap prime ${primeNow === "on" ? "off" : "on"}`,
         run: () => suspended(`dswap prime ${primeNow === "on" ? "off" : "on"}`, () => runCli(["prime", primeNow === "on" ? "off" : "on"]), `Priming is ${primeNow === "on" ? "off" : "on"}.`) }]),
+      ...(serverHost ? [serverAction(serverHost)] : []),
       { keys: ["r"], hint: "r", label: "refresh", cli: "dswap list", run: async () => { say("Refreshed.", "ok"); await refresh(MANUAL_TTL_MS); } },
       { keys: ["?"], hint: "?", label: "help", cli: "dswap help", run: () => { help = !help; } },
       { keys: ["q", "escape"], hint: "q", label: "quit", cli: "", run: () => quit() },
@@ -599,7 +624,8 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
       ["↑ ↓  j k", "move between accounts"], ["⏎", "default action (switch / log in)"], ["/  :", "command box (type any dswap command)"],
       ["tab", "complete the suggestion"], ["esc", "close the command box / help"], ["?", "toggle this help"],
     ];
-    const lines = [bold(c.sky("Settings")), `  ${bold(c.cyan(fit("intro", 10)))}${c.text(`logo animation on start: ${logoAnimation()}`)}${c.muted("  (intro once|always|off)")}`, "", bold(c.sky("Keys")), ...keys.map(([key, about]) => `  ${bold(c.cyan(fit(key!, 10)))}${c.text(about!)}`), "", bold(c.sky("Commands")) + c.muted("  same in the command box and in your shell (dswap …)"),
+    const lines = [bold(c.sky("Settings")), `  ${bold(c.cyan(fit("intro", 10)))}${c.text(`logo animation on start: ${logoAnimation()}`)}${c.muted("  (intro once|always|off)")}`,
+      `  ${bold(c.cyan(fit("server", 10)))}${c.text(`priming server: ${serverHost ?? "none"}`)}${c.muted("  (prime server <ssh-name>|off · P toggles its priming)")}`, "", bold(c.sky("Keys")), ...keys.map(([key, about]) => `  ${bold(c.cyan(fit(key!, 10)))}${c.text(about!)}`), "", bold(c.sky("Commands")) + c.muted("  same in the command box and in your shell (dswap …)"),
       ...COMMANDS.map((command) => `  ${c.green(fit(`${command.name} ${command.args}`.trim(), 30))}${c.muted(command.about)}`)];
     return box("Help", lines, width, { right: c.muted("? or esc to close"), focus: true });
   }
@@ -631,7 +657,12 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     const tag = bg(THEME.tagBg)(bold(c.text(" DSWAP ")));
     const autoText = autoNow === "on" ? c.ok("● auto on") : autoNow === "installed" ? c.warn("● auto stopped") : autoNow === "unsupported" ? c.muted("auto n/a") : c.muted("○ auto off");
     const active = claude.find((account) => account.active);
-    const left = ` ${tag} ${autoText}  ${primeNow === "on" ? c.ok("● prime on") : primeNow === "off" ? c.muted("○ prime off") : ""}  ${c.muted("·")}  ${c.muted("default")} ${bold(c.claude(active?.label ?? "-"))}  ${c.muted("·")}  ${c.claude(String(claude.filter((a) => a.selector !== "-").length))} ${c.muted("claude ·")} ${c.codex(String(codex.length))} ${c.muted("codex ·")} ${providerName("google", String(google.length))} ${c.muted("google")}`;
+    const serverText = !serverHost ? ""
+      : !server ? c.muted(` ${SPIN[spinner % SPIN.length]} ${serverHost}`)
+      : server.state === "on" ? c.ok(` ● ${serverHost} on`) + (primeNow === "on" ? c.warn(" (both on)") : "")
+      : server.state === "off" ? c.muted(` ○ ${serverHost} off`)
+      : server.state === "missing" ? c.warn(` ${serverHost}: no dswap`) : c.warn(` ${serverHost} ?`);
+    const left = ` ${tag} ${autoText}  ${primeNow === "on" ? c.ok("● prime on") : primeNow === "off" ? c.muted("○ prime off") : ""}${serverText}  ${c.muted("·")}  ${c.muted("default")} ${bold(c.claude(active?.label ?? "-"))}  ${c.muted("·")}  ${c.claude(String(claude.filter((a) => a.selector !== "-").length))} ${c.muted("claude ·")} ${c.codex(String(codex.length))} ${c.muted("codex ·")} ${providerName("google", String(google.length))} ${c.muted("google")}`;
     const right = mode.kind === "command" ? c.muted("⏎ run · tab complete · ↑↓ pick · esc close ") : c.muted("/ command · ? help · q quit ");
     return `${left}${" ".repeat(Math.max(1, width - visible(left) - visible(right)))}${right}`;
   }
@@ -642,6 +673,10 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     for (const line of primeLines) {
       const text = line.slice(8).trim();
       entries.push({ time: line.slice(0, 8), text, source: "prime", count: 1, tone: text.startsWith("failed") ? "error" : text.startsWith("primed") ? "ok" : "info" });
+    }
+    for (const line of server?.log ?? []) {
+      const text = line.slice(8).trim();
+      entries.push({ time: line.slice(0, 8), text: `${serverHost}: ${text}`, source: "prime", count: 1, tone: text.startsWith("failed") ? "error" : text.startsWith("primed") ? "ok" : "info" });
     }
     for (const line of journal) {
       const time = line.slice(0, 8), text = line.slice(8).trim();
@@ -749,7 +784,10 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     if (name === "down" || name === "j" || name === "tab") { move(1); return; }
     if (name === "home" || name === "g") { const first = selectable()[0]; if (first) selected = keyOf(first); return; }
     if (name === "end") { const last = selectable().at(-1); if (last) selected = keyOf(last); return; }
-    const action = [...accountActions(current()), ...generalActions()].find((item) => item.keys.includes(name));
+    // An uppercase key has its own action where one exists (P: the server); otherwise it acts like lowercase.
+    const upper = text && /^[A-Z]$/.test(text) ? text : undefined;
+    const actions = [...accountActions(current()), ...generalActions()];
+    const action = (upper && actions.find((item) => item.keys.includes(upper))) || actions.find((item) => item.keys.includes(name));
     if (action) { help = false; await action.run(); }
   }
 

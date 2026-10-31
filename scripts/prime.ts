@@ -188,13 +188,33 @@ export const PRIME_USAGE = [
   "       dswap prime idle 8|off        pause after this many hours without Droid use",
   "       dswap prime cap 90            skip accounts whose week is at least this full",
   "       dswap prime only claude,codex,google",
+  "       dswap prime server <ssh-name>|off  show (and toggle with P) priming on that machine in the dashboard",
+  "       dswap prime server            priming state on that machine",
 ].join("\n");
+
+async function primeServerCommand(value: string | undefined): Promise<number> {
+  const { loadSettings, saveSettings } = await import("./dswap-tui.js");
+  if (value === "off") { saveSettings({ primeServer: undefined }); process.stdout.write("No priming server.\n"); return 0; }
+  if (value) {
+    if (!/^[A-Za-z0-9._@-]+$/.test(value)) throw new Error("dswap prime server takes an SSH host name, e.g. my-server.");
+    saveSettings({ primeServer: value });
+  }
+  const host = loadSettings().primeServer;
+  if (!host) { process.stdout.write("No priming server. Set one with: dswap prime server <ssh-name>\n"); return 0; }
+  const { fetchRemotePrime } = await import("../src/upstream/remote-prime.js");
+  const remote = await fetchRemotePrime(host);
+  process.stdout.write(`${host}: priming ${remote.state}${remote.detail ? ` (${remote.detail})` : ""}\n`);
+  for (const line of remote.log.slice(-5)) process.stdout.write(`  ${line}\n`);
+  if (remote.state === "on" && primeServiceState() === "on") process.stdout.write(`Priming is on here and on ${host}; one is enough (dswap prime off).\n`);
+  return 0;
+}
 
 export async function prime(args: string[]): Promise<number> {
   const [action, value] = args;
   const config = loadPrimeConfig();
   if (!action || action.startsWith("--")) { await primeOnce({ dryRun: args.includes("--dry-run"), force: args.includes("--force"), service: args.includes("--service") }); return 0; }
   if (action === "help") { process.stdout.write(`${PRIME_USAGE}\n`); return 0; }
+  if (action === "server") return primeServerCommand(value);
   if (action === "quiet" && value) { config.quiet = value === "off" ? undefined : parseQuiet(value); }
   else if (action === "idle" && value) {
     const hours = Number(value);
