@@ -2,8 +2,6 @@
 
 **Droid Swap Sub Handler**: run Factory Droid on your Claude, Codex and Google subscriptions, with several accounts per provider, live limits and automatic switching.
 
-### CODEX IS NOT USABLE RIGHT NOW
-
 English | [简体中文](README.zh-CN.md)
 
 dswap is a fork of [aa2246740/factory-cc](https://github.com/aa2246740/factory-cc) ("Relay Bridge"). It adds Codex and Google backends, multi-account routing and the `dswap` dashboard. The bridge underneath works as described below; on-disk names (`factory-cc-accounts`, the service and hook names) keep the old name so existing installs keep working.
