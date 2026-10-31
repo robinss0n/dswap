@@ -223,11 +223,6 @@ function explicitLabel(model: BridgeModel): BridgeModel {
   const name = match ? `${match[1]![0]!.toUpperCase()}${match[1]!.slice(1)} ${match[2]}.${match[3]} (${model.id})` : model.id;
   return { ...model, displayName: `Claude Code · ${name}` };
 }
-/** Default to `auto` only when cswap answers with at least one stored account. */
-function hasCswapAccounts(deps: DesktopDependencies): boolean {
-  const result = deps.run("cswap", ["list", "--json"]);
-  try { return result.status === 0 && (JSON.parse(result.stdout ?? "") as { accounts?: unknown[] }).accounts!.length > 0; } catch { return false; }
-}
 /** Pinned Codex accounts, else `auto` when there are several Codex logins and `default` when there is one. */
 function codexAccountsFor(install: Installation): string[] {
   return install.codexAccounts ?? (listCodexAccounts().length > 1 ? ["auto"] : ["default"]);
@@ -447,8 +442,8 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
     prompt: parsed.prompt ?? "droid",
     ...(parsed.codexModels?.length ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}) };
-  const accounts = parsed.accounts ?? (hasCswapAccounts(deps) ? ["auto"] : []);
-  if (accounts.length) install.accounts = accounts;
+  // Account copies are opt-in: with `dswap auto on`, the plain entries follow cswap's switches in place.
+  if (parsed.accounts?.length) install.accounts = parsed.accounts;
   assertClaudeCredential(readDesktopClaudeConfig(deps, install));
   checkedRun(deps, deps.node, [join(deps.repo, "node_modules/typescript/bin/tsc"), "-p", join(deps.repo, "tsconfig.build.json")]);
   if (!existsSync(join(install.repo, "dist/index.js"))) throw new Error("Missing built dist/index.js. Run npm run build.");

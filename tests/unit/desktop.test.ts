@@ -322,13 +322,13 @@ it("refuses a missing pinned Claude profile before replacing the running service
   expect(run.mock.calls.some(([, args]) => args[0] === "bootout")).toBe(false);
 });
 
-it("installs a systemd user service on Linux with Droid's prompt and cswap auto accounts by default", async () => {
+it("installs a systemd user service on Linux with Droid's prompt; account copies only on request", async () => {
   const { deps, run } = fixture();
   const accounts = JSON.stringify({ accounts: [{ number: 2, usageStatus: "ok" }] });
   run.mockImplementation((command) => ({ status: 0, ...(command === "cswap" ? { stdout: accounts } : {}) }));
   const linux = { ...deps, platform: "linux" };
   const paths = desktopPaths(deps.home, "linux");
-  await desktop(["install", "--port", "19877"], linux);
+  await desktop(["install", "--port", "19877", "--accounts", "auto"], linux);
   expect(paths.plist).toBe(join(deps.home, ".config/systemd/user/factory-cc-bridge.service"));
   expect(paths.state).toBe(join(deps.home, ".local/state/factory-cc"));
   const unit = readFileSync(paths.plist, "utf8");
@@ -346,4 +346,14 @@ it("installs a systemd user service on Linux with Droid's prompt and cswap auto 
   await desktop(["uninstall"], linux);
   expect(run).toHaveBeenLastCalledWith("systemctl", ["--user", "disable", "--now", "factory-cc-bridge.service"]);
   expect(existsSync(paths.plist)).toBe(false); expect(existsSync(paths.state)).toBe(false);
+});
+
+it("adds no account copies on Linux unless --accounts asks for them", async () => {
+  const { deps, run } = fixture();
+  run.mockImplementation((command) => ({ status: 0, ...(command === "cswap" ? { stdout: JSON.stringify({ accounts: [{ number: 2 }] }) } : {}) }));
+  const linux = { ...deps, platform: "linux" };
+  const paths = desktopPaths(deps.home, "linux");
+  await desktop(["install"], linux);
+  expect(readFileSync(paths.plist, "utf8")).not.toContain("BRIDGE_ACCOUNTS");
+  expect(JSON.parse(readFileSync(paths.settings, "utf8")).customModels.map((model: { model: string }) => model.model)).toEqual(["sonnet"]);
 });

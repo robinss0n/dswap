@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
@@ -15,6 +16,7 @@ import { codexAccountsDir, listCodexAccounts, probeCodexAccount, validCodexAccou
  *   npm run accounts -- login codex [name] log an existing Codex account in again (default: ~/.codex)
  *   npm run accounts -- login claude     `claude auth login`, then `cswap add`: adds a new account or renews a dead one
  *   npm run accounts -- remove claude <num|email>   `cswap remove`
+ *   npm run accounts -- auto on|off|status  run `cswap auto` as a systemd user service (Linux)
  * Claude accounts are stored by cswap; these commands only call it.
  */
 
@@ -102,6 +104,61 @@ function removeClaude(selector: string): number {
   return 0;
 }
 
+const AUTO_UNIT = "cswap-auto.service";
+
+/** systemctl --user needs the session bus; nothing else is passed through. */
+function systemctl(args: string[], quiet = false): number {
+  const env = { HOME: homedir(), PATH: process.env.PATH, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid!()}`,
+    ...(process.env.DBUS_SESSION_BUS_ADDRESS ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } : {}) };
+  return spawnSync("systemctl", ["--user", ...args], { stdio: quiet ? "ignore" : "inherit", env }).status ?? 1;
+}
+
+export function cswapAutoUnit(cswap: string, path: string): string {
+  const quote = (value: string) => `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
+  return `[Unit]
+Description=cswap auto-switch (moves the default Claude login off an account before it hits its limit)
+
+[Service]
+ExecStart=${quote(cswap)} auto
+Environment=${quote(`PATH=${path}`)}
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+/** `cswap auto` swaps ~/.claude's login while Claude Code keeps running, so bridge sessions on the plain models switch in place. */
+function auto(action?: string): number {
+  if (process.platform !== "linux") throw new Error("dswap auto uses a systemd user service and needs Linux.");
+  const unit = join(homedir(), ".config/systemd/user", AUTO_UNIT);
+  if (action === "on") {
+    const found = spawnSync("sh", ["-c", "command -v cswap"], { encoding: "utf8" });
+    const cswap = found.stdout.trim();
+    if (found.status !== 0 || !cswap) throw new Error("cswap is not on PATH.");
+    mkdirSync(join(homedir(), ".config/systemd/user"), { recursive: true });
+    writeFileSync(unit, cswapAutoUnit(cswap, process.env.PATH ?? "/usr/bin:/bin"), { mode: 0o644 });
+    if (systemctl(["daemon-reload"]) !== 0 || systemctl(["enable", "--now", AUTO_UNIT]) !== 0) throw new Error("systemctl could not start cswap auto.");
+    process.stderr.write("cswap auto is on: the default Claude login moves to the account with the most room at 90% use. Logs: journalctl --user -u cswap-auto\n");
+    return 0;
+  }
+  if (action === "off") {
+    systemctl(["disable", "--now", AUTO_UNIT], true);
+    rmSync(unit, { force: true });
+    systemctl(["daemon-reload"], true);
+    process.stderr.write("cswap auto is off.\n");
+    return 0;
+  }
+  if (action === undefined || action === "status") {
+    const active = systemctl(["is-active", "--quiet", AUTO_UNIT], true) === 0;
+    process.stdout.write(`cswap auto: ${active ? "on" : existsSync(unit) ? "installed but not running" : "off"}\n`);
+    if (active) spawnSync("journalctl", ["--user", "-u", AUTO_UNIT, "-n", "5", "--no-pager", "-o", "cat"], { stdio: "inherit" });
+    return 0;
+  }
+  throw new Error("Usage: dswap auto on|off|status");
+}
+
 function removeCodex(name: string): number {
   if (name === DEFAULT_CODEX_ACCOUNT) throw new Error("`default` is your normal ~/.codex login; log it out with `codex logout` instead.");
   const account = listCodexAccounts().find((item) => item.name === name);
@@ -115,6 +172,7 @@ export async function accounts(argv: string[]): Promise<number> {
   const [action, provider, name] = argv;
   if (!action || action === "--json") { await overview(action === "--json"); return 0; }
   if ((action === "add" || action === "remove") && provider === "codex" && name) return action === "add" ? addCodex(name) : removeCodex(name);
+  if (action === "auto") return auto(provider);
   if (action === "login" && provider === "codex") return loginCodex(name);
   if ((action === "login" || action === "add") && provider === "claude") return loginClaude();
   if (action === "remove" && provider === "claude" && name) return removeClaude(name);
@@ -126,6 +184,7 @@ export async function accounts(argv: string[]): Promise<number> {
     "       dswap remove codex <name>",
     "       dswap login claude             add a Claude account or renew a dead one (claude auth login + cswap add)",
     "       dswap remove claude <num|email>",
+    "       dswap auto on|off|status       keep cswap auto running in the background (switches before a limit, same session)",
   ].join("\n"));
 }
 
