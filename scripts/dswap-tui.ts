@@ -568,7 +568,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     const suggestions = suggestionLines(width, 6);
     const bottom = [toast(), ...commandBox(width), ...suggestions, statusBar(width)];
     const accountsBox = accountsPanel(width);
-    const banner = [`  ${gradient(LOGO[0]!)}   ${c.muted("account switcher for the Droid bridge")}`,
+    const banner = [`  ${gradient(LOGO[0]!)}   ${c.muted("droid swap sub handler")}`,
       `  ${gradient(LOGO[1]!)}   ${providerName("claude")} ${c.muted("·")} ${providerName("codex")} ${c.muted("·")} ${providerName("google")}`, ""];
 
     let middle: string[];

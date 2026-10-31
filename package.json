@@ -1,8 +1,8 @@
 {
-  "name": "relay-bridge",
+  "name": "dswap",
   "version": "0.1.0",
   "private": true,
-  "description": "Anthropic Messages-compatible localhost bridge from Factory Droid BYOK into the official Claude Agent SDK and unmodified Claude Code.",
+  "description": "dswap (Droid Swap Sub Handler): run Factory Droid on your Claude, Codex and Google subscriptions, with several accounts per provider and automatic switching.",
   "type": "module",
   "engines": {
     "node": ">=22"

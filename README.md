@@ -1,6 +1,10 @@
-# Relay Bridge
+# dswap
+
+**Droid Swap Sub Handler**: run Factory Droid on your Claude, Codex and Google subscriptions, with several accounts per provider, live limits and automatic switching.
 
 English | [简体中文](README.zh-CN.md)
+
+dswap is a fork of [aa2246740/factory-cc](https://github.com/aa2246740/factory-cc) ("Relay Bridge"). It adds Codex and Google backends, multi-account routing and the `dswap` dashboard. The bridge underneath works as described below; on-disk names (`factory-cc-accounts`, the service and hook names) keep the old name so existing installs keep working.
 
 Connect Factory Droid's BYOK custom models to the **official Claude Agent SDK and unmodified Claude Code**. Claude Code retains its native system prompt, built-in tools, and sessions; Droid executes its own skills, tasks, plugin tools, and Mission lifecycle operations via namespaced MCP.
 
@@ -8,7 +12,7 @@ In `sdk` mode, a persistent streaming-input `query()` is maintained for each ses
 
 This is an SDK integration approach inspired by T3, not official support, authorization, or an account-status guarantee. Results from third-party compatible endpoints such as GLM do not represent Claude models. See [Integration Alignment](docs/T3-ALIGNMENT.md) and [Limitations](docs/LIMITATIONS.md).
 
-## Several accounts: dswap (Claude, Codex, Google)
+## Accounts dashboard (Claude, Codex, Google)
 
 `dswap` is a terminal dashboard for every subscription account the bridge can use. It shows each account's plan, 5-hour and weekly limits and when they reset, and lets you switch, sign in, rename and remove accounts. The screenshots use `dswap demo`, which shows made-up accounts and runs nothing.
 
