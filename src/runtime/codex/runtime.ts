@@ -15,6 +15,7 @@ import { droidReasoningLevel } from "../reasoning.js";
 import { buildDynamicUserContent, buildInitialUserContent } from "../system-prompt.js";
 import type { BridgeRuntime, RetiredSession, RuntimeControl, RuntimeHostCall, RuntimeHostCompletion, RuntimeHostEnd, RuntimeRequest, RuntimeTurn, StreamSink } from "../types.js";
 import { CodexAppServer, type AppServerOptions } from "./app-server.js";
+import type { FallbackAlerts } from "../../notify.js";
 
 /**
  * Codex through `codex app-server`. Droid's system prompt becomes Codex's
@@ -88,6 +89,8 @@ export interface CodexRuntimeDependencies {
   /** Injected for tests: choose a concrete account for `auto`. */
   pickAccount?: (exclude: ReadonlySet<string>) => Promise<string>;
   now?: () => number;
+  /** Desktop alert when a session runs without Droid parity (see FallbackAlerts). */
+  alerts?: Pick<FallbackAlerts, "alert">;
 }
 
 // Droid level -> Codex effort. Every model in Codex's catalog (models_cache.json,
@@ -240,6 +243,10 @@ export class CodexRuntime implements BridgeRuntime {
     const home = codexAccountHome(account);
     const cwd = resolveRequestCwd(input.headers, input.request, this.config);
     const catalog = droidCodexCatalog(home, this.config.dataDir, account);
+    if (!catalog) {
+      this.deps.alerts?.alert(`codex-catalog-${account}`, "dswap: Codex fallback",
+        `Codex account ${account} has no model catalog to adjust, so Codex adds its own tools (sub-agents, apply_patch) next to Droid's. Droid's prompt is still the base prompt.`);
+    }
     const server = (this.deps.open ?? ((options) => new CodexAppServer(options)))({
       codexHome: home, cwd, configOverrides: catalog ? [`model_catalog_json=${JSON.stringify(catalog)}`] : [],
       onRequest: (method, params) => this.serverRequest(live, input, method, params),

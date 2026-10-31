@@ -16,6 +16,7 @@ import { buildDynamicUserContent, buildInitialUserContent } from "../system-prom
 import { droidReasoningLevel, mapReasoningValue } from "../reasoning.js";
 import type { BridgeRuntime, RetiredSession, RuntimeControl, RuntimeHostCall, RuntimeHostCompletion, RuntimeHostEnd, RuntimeRequest, RuntimeTurn, StreamSink } from "../types.js";
 import type { AcpClient } from "./acp-client.js";
+import type { FallbackAlerts } from "../../notify.js";
 import { DroidMcpHost, type HostedResult, type HostedTool } from "./droid-mcp-host.js";
 
 /**
@@ -93,6 +94,8 @@ export interface AntigravityRuntimeDependencies {
   open?: (home: string, handlers: { onNotification: (method: string, params: any) => void; onRequest: (method: string, params: any) => Promise<unknown> }, build: AntigravityExecutable) => AcpClient;
   /** Injected for tests: which server to run and whether it replaces the system prompt. */
   antigravity?: () => AntigravityExecutable;
+  /** Desktop alert when Droid's prompt stops being the whole system prompt (see FallbackAlerts). */
+  alerts?: Pick<FallbackAlerts, "alert">;
   /** Injected for tests: choose a concrete account for `auto`. */
   pickAccount?: (exclude: ReadonlySet<string>) => Promise<string>;
   /** Injected for tests: resolve an account name to its GEMINI_HOME. */
@@ -248,6 +251,10 @@ export class AntigravityRuntime implements BridgeRuntime {
     this.build ??= (this.deps.antigravity ?? (() => droidAntigravity(antigravityExecutable(), (error) => {
       this.logger.warn("antigravity_patch_unavailable", { error: error instanceof Error ? error.message : String(error) });
     })))();
+    if (!this.build.replacesPrompt) {
+      this.deps.alerts?.alert("google-patch-unavailable", "dswap: Google models fell back",
+        "Antigravity could not be patched (a new version may have changed its code). Google models now run with Antigravity's own prompt, and Droid's prompt is only appended.");
+    }
     return this.build;
   }
 
@@ -263,6 +270,8 @@ export class AntigravityRuntime implements BridgeRuntime {
       // go back to the unmodified one (appended prompt) for the rest of this run.
       this.logger.warn("antigravity_patch_failed", { error: error instanceof Error ? error.message : String(error) });
       this.patchFailed = true;
+      this.deps.alerts?.alert("google-patch-failed", "dswap: Google models fell back",
+        "The patched Antigravity server failed to start a session. Until the bridge restarts, Google models run with Antigravity's own prompt, and Droid's prompt is only appended.");
       live.client?.close();
       live.disposeMcp?.();
       Object.assign(live, { client: undefined, acpSessionId: undefined, disposeMcp: undefined, configOptions: undefined });

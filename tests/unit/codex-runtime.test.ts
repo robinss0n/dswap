@@ -145,4 +145,18 @@ describe("droidCodexCatalog", () => {
     dirs.push(home);
     expect(droidCodexCatalog(home, home, "default")).toBeUndefined();
   });
+
+  it("alerts when Codex runs without the Droid catalog", async () => {
+    const fake = fakeServer();
+    const alerts: string[] = [];
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open, alerts: { alert: (key) => { alerts.push(key); } } });
+    const pending = runtime.handle(input([{ role: "user", content: "go" }]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    void fake.call("exec-a");
+    await pending;
+    // The real ~/.codex catalog exists on this machine, so no fallback here; the
+    // configOverrides tell which path ran.
+    const used = (fake.state.options?.configOverrides ?? []).length > 0;
+    expect(alerts).toEqual(used ? [] : ["codex-catalog-default"]);
+  });
 });

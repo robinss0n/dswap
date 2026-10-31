@@ -9,6 +9,7 @@ import type { AcpClient } from "../../src/runtime/antigravity/acp-client.js";
 import type { DroidMcpHost } from "../../src/runtime/antigravity/droid-mcp-host.js";
 import { AntigravityRuntime, DROID_HOST_NOTICE } from "../../src/runtime/antigravity/runtime.js";
 import { REPLACE_MARKER } from "../../src/upstream/antigravity-patch.js";
+import { FallbackAlerts } from "../../src/notify.js";
 import type { RuntimeRequest } from "../../src/runtime/types.js";
 import type { SessionRecord } from "../../src/sessions/state.js";
 import type { MessagesRequest } from "../../src/types.js";
@@ -30,6 +31,7 @@ function setup(initial: string, thinking = true, menu: string[] = [initial], rep
   ];
   let level = "high";
   const opened: string[] = [];
+  const alerts: string[] = [];
   const client = (executable: string) => ({
     exited: new Promise(() => {}), close() {}, notify() {},
     request: async (method: string, params: any) => {
@@ -48,7 +50,8 @@ function setup(initial: string, thinking = true, menu: string[] = [initial], rep
   const mcpHost = { register: async () => ({ url: "http://127.0.0.1:1/mcp", dispose() {} }), close: async () => {} } as unknown as DroidMcpHost;
   const runtime = new AntigravityRuntime(config, logger, {
     open: (_home, _handlers, build) => { opened.push(build.executable); return client(build.executable); },
-    antigravity: () => ({ executable: replacesPrompt ? "patched" : "original", replacesPrompt, original: "original" }), accountHome: () => tmp(), mcpHost });
+    antigravity: () => ({ executable: replacesPrompt ? "patched" : "original", replacesPrompt, original: "original" }), accountHome: () => tmp(), mcpHost,
+    alerts: new FallbackAlerts(logger, (title, body) => { alerts.push(/could not be patched/.test(body) ? "google-patch-unavailable" : /failed to start/.test(body) ? "google-patch-failed" : title); }) });
   const session: SessionRecord = {
     bridgeSessionId: "bridge-google", role: "chat", state: "IDLE", model: `google:main:${initial}`, provider: "google",
     toolNames: ["Read"], createdAt: "", updatedAt: "", pendingToolIds: [], cancelRequested: false, notes: [],
@@ -63,7 +66,7 @@ function setup(initial: string, thinking = true, menu: string[] = [initial], rep
     const request = input();
     return { ...request, request: { ...request.request, model: `google:main:${next}` } };
   };
-  return { runtime, calls, input, switchTo, config, opened };
+  return { runtime, calls, input, switchTo, config, opened, alerts };
 }
 
 describe("AntigravityRuntime", () => {
@@ -75,8 +78,11 @@ describe("AntigravityRuntime", () => {
   });
 
   it("without the patched server, appends Droid's prompt behind the host notice and picks the model by base id", async () => {
-    const { runtime, calls, input } = setup("gemini-3.8-flash");
+    const { runtime, calls, input, alerts } = setup("gemini-3.8-flash");
     await runtime.handle(input());
+    await runtime.handle({ ...input(), session: { ...input().session, bridgeSessionId: "bridge-google-2" } });
+    // Announced once per bridge run, not per session.
+    expect(alerts).toEqual(["google-patch-unavailable"]);
     const created = calls.find(([method]) => method === "session/new")![1];
     expect(created._meta.antigravity.systemPrompt.append).toBe(`${DROID_HOST_NOTICE}\n\nYou are Droid.`);
     expect(created._meta.antigravity.enabledTools).toEqual([]);
@@ -109,18 +115,20 @@ describe("AntigravityRuntime", () => {
   });
 
   it("with the patched server, sends Droid's prompt behind the replace marker and nothing else", async () => {
-    const { runtime, calls, input, opened } = setup("gemini-3.8-flash", true, ["gemini-3.8-flash"], true);
+    const { runtime, calls, input, opened, alerts } = setup("gemini-3.8-flash", true, ["gemini-3.8-flash"], true);
     await runtime.handle(input());
     expect(opened).toEqual(["patched"]);
+    expect(alerts).toEqual([]);
     const created = calls.find(([method]) => method === "session/new")![1];
     expect(created._meta.antigravity.systemPrompt.append).toBe(`${REPLACE_MARKER}You are Droid.`);
   });
 
   it("falls back to the unmodified server when the patched one cannot start a session", async () => {
-    const { runtime, calls, input, opened } = setup("gemini-3.8-flash", true, ["gemini-3.8-flash"], true, true);
+    const { runtime, calls, input, opened, alerts } = setup("gemini-3.8-flash", true, ["gemini-3.8-flash"], true, true);
     const turn = await runtime.handle(input());
     expect(turn.response.stop_reason).toBe("end_turn");
     expect(opened).toEqual(["patched", "original"]);
+    expect(alerts).toEqual(["google-patch-failed"]);
     const prompts = calls.filter(([method]) => method === "session/new").map(([, params]) => params._meta.antigravity.systemPrompt.append);
     expect(prompts).toEqual([`${REPLACE_MARKER}You are Droid.`, `${DROID_HOST_NOTICE}\n\nYou are Droid.`]);
   });

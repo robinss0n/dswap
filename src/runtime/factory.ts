@@ -1,5 +1,6 @@
 import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../logging.js";
+import { FallbackAlerts } from "../notify.js";
 import { AntigravityRuntime } from "./antigravity/runtime.js";
 import { CodexRuntime } from "./codex/runtime.js";
 import { CursorSdkRuntime } from "./cursor/sdk-runtime.js";
@@ -15,6 +16,8 @@ export function createRuntime(config: BridgeConfig, logger: Logger, canaryPath: 
   const claude = new SdkRuntime(config, logger);
   const has = (provider: string) => (config.models ?? []).some((model) => model.provider === provider);
   if (!has("cursor") && !has("codex") && !has("google")) return claude;
-  return new RouterRuntime(claude, has("cursor") ? new CursorSdkRuntime(config, logger) : undefined, has("codex") ? new CodexRuntime(config, logger) : undefined,
-    has("google") ? new AntigravityRuntime(config, logger) : undefined);
+  // One alerter, so each fallback is announced once per bridge run.
+  const alerts = new FallbackAlerts(logger);
+  return new RouterRuntime(claude, has("cursor") ? new CursorSdkRuntime(config, logger) : undefined, has("codex") ? new CodexRuntime(config, logger, { alerts }) : undefined,
+    has("google") ? new AntigravityRuntime(config, logger, { alerts }) : undefined);
 }
