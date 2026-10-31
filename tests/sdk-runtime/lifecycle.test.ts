@@ -109,6 +109,36 @@ describe("official SDK streaming-input lifecycle (injected offline SDK)", () => 
     expect(sdk.close).not.toHaveBeenCalled();
   });
 
+  it("BRIDGE_PROMPT=droid sends Droid's prompt as the system prompt and every Droid tool through MCP", async () => {
+    const sdk = new FakeSdk(async function* (_input, index) { yield success(`reply-${index}`); });
+    const { runtime } = create(sdk, { promptMode: "droid" });
+    const s = session();
+    const tools = ["Read", "Edit", "Execute", "TaskOutput"].map((name) => ({ name, input_schema: { type: "object" as const, properties: {} } }));
+    const droid = (text: string) => request(s, text, { system: "You are Droid, built by Factory.", tools });
+    await runtime.handle(droid("first"));
+    await runtime.handle(droid("second"));
+    const options = sdk.calls[0]!.options;
+    expect(options.tools).toEqual([]);
+    expect(options.systemPrompt).toContain("You are Droid, built by Factory.");
+    expect(options.systemPrompt).toContain("mcp__droid__Read");
+    expect([...sdk.handlers.keys()].sort()).toEqual(["Edit", "Execute", "Read", "TaskOutput"]);
+    // Droid's prompt is not repeated as host context, and the native-tool note is gone.
+    expect(JSON.stringify(sdk.inputs)).not.toContain("You are Droid");
+    expect(JSON.stringify(sdk.inputs)).not.toContain("Allowed native tool equivalents");
+  });
+
+  it("starts account routes through the cswap launcher with the chosen account", async () => {
+    const sdk = new FakeSdk(async function* () { yield success("ok"); });
+    const { runtime } = create(sdk, { models: [...modelCatalog, { id: "acct:4:first-model", model: "native-model-a", displayName: "Model A · 4" }] });
+    await runtime.handle(request(session({ bridgeSessionId: "pinned" }), "go", { model: "acct:4:first-model" }));
+    await runtime.handle(request(session({ bridgeSessionId: "plain" }), "go", { model: "first-model" }));
+    const [pinned, plain] = sdk.calls.map((call) => call.options as { pathToClaudeCodeExecutable?: string; env: Record<string, string> });
+    expect(pinned!.pathToClaudeCodeExecutable).toMatch(/scripts\/cswap-claude\.sh$/);
+    expect(pinned!.env.BRIDGE_CSWAP_ACCOUNT).toBe("4");
+    expect(plain!.pathToClaudeCodeExecutable ?? "").not.toMatch(/cswap/);
+    expect(plain!.env.BRIDGE_CSWAP_ACCOUNT).toBeUndefined();
+  });
+
   it("sets no turn limit unless BRIDGE_MAX_TURNS asks for one", async () => {
     const unlimited = new FakeSdk(async function* () { yield success("ok"); });
     await create(unlimited).runtime.handle(request(session(), "go"));
