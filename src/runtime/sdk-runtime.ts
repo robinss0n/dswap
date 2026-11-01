@@ -23,7 +23,7 @@ import { buildChildEnv, classifyAuth, maskEmail, type AuthClassification, type A
 import { publicSelection, sdkEnv, selectionFromConfig, type UpstreamSelection } from "../upstream/providers.js";
 import { resolveRequestModel } from "../models.js";
 import { CSWAP_LAUNCHER, resolveAccount } from "../upstream/cswap.js";
-import { claudeReasoningKey, claudeReasoningOptions, droidReasoningLevel } from "./reasoning.js";
+import { claudeReasoningKey, claudeReasoningOptions, droidReasoningLevel, liveEffortChange, type ClaudeEffort } from "./reasoning.js";
 import { OwnedProcesses } from "./owned-processes.js";
 import { upstreamError } from "./upstream-error.js";
 import { redactValue } from "../security/redact.js";
@@ -37,6 +37,7 @@ export interface SdkHandle {
     close?: () => void;
     mcpServerStatus?: () => Promise<Array<{ name: string; status: string; tools?: Array<{ name: string; description?: string }> }>>;
     accountInfo?: () => Promise<Record<string, unknown>>;
+    applyFlagSettings?: (settings: { effortLevel?: ClaudeEffort | null }) => Promise<void>;
   };
   tool(name: string, description: string, schema: unknown, handler: (args: Record<string, unknown>, extra?: unknown) => Promise<unknown>, extras?: Record<string, unknown>): unknown;
   createSdkMcpServer(options: Record<string, unknown>): unknown;
@@ -199,6 +200,8 @@ const STEERING_TURN_DENIAL = "BRIDGE_USER_TURN_PENDING: A new user message is qu
  * subagents at once has taken over 10s. Until it answers, no prompt is sent.
  */
 const SDK_START_TIMEOUT_MS = 60_000;
+/** Characters; far above any Droid 1.1.0 tool description, including Script's nested reference. */
+const DROID_TOOL_DESCRIPTION_LIMIT = "1000000";
 /** Longest a Task waits for the rest of its message before it goes to Droid alone. */
 const TASK_BATCH_WAIT_MS = 30_000;
 
@@ -622,17 +625,37 @@ export class SdkRuntime implements BridgeRuntime {
     this.logger.info("sdk_model_changed", change);
   }
 
-  /** Same idle retire as a model switch. The next startQuery resumes sdkSessionId. */
+  /**
+   * Droid reads the selected effort for every model call, so a change made mid
+   * tool loop applies to the very next call. An effort-only change is applied
+   * to the running query the same way. Other changes (off, exact budgets, no
+   * level) use the same idle retire as a model switch; the next startQuery
+   * resumes sdkSessionId.
+   */
   private async selectReasoning(live: LiveSdk, input: RuntimeRequest, hasResults: boolean): Promise<void> {
     const next = claudeReasoningKey(input.request);
     if (live.reasoningKey === next) return;
-    // Keep the process owning these callbacks alive; the next user turn resumes
-    // the native history with the requested effort after all results drain.
-    if (hasResults) return;
     if (!live.query) {
       live.reasoningKey = next;
       return;
     }
+    const effort = liveEffortChange(live.reasoningKey, next);
+    if (effort && live.query.applyFlagSettings) {
+      const previous = live.reasoningKey;
+      try {
+        await live.query.applyFlagSettings({ effortLevel: effort });
+        live.reasoningKey = next;
+        const change = { from: previous ?? null, to: next, level: droidReasoningLevel(input.request) ?? null, sdkSessionId: live.sdkSessionId, sessionId: live.current?.session.bridgeSessionId, strategy: "live" };
+        live.events.push({ at: now(), type: "sdk_reasoning_changed", data: change });
+        this.logger.info("sdk_reasoning_changed", change);
+        return;
+      } catch (error) {
+        this.logger.warn("sdk_reasoning_live_change_failed", { sessionId: live.current?.session.bridgeSessionId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    // Keep the process owning these callbacks alive; the next user turn resumes
+    // the native history with the requested reasoning after all results drain.
+    if (hasResults) return;
     if (hasResults || live.active || live.starting || live.pending.size || live.handlerArrivals.size
         || live.candidates.size || live.hostResultConsumptions.size || live.approvals.size
         || live.backgroundTasks.size || live.outbox.length) {
@@ -900,6 +923,10 @@ export class SdkRuntime implements BridgeRuntime {
     if (route) env.BRIDGE_MODEL_ID = route.id;
     else delete env.BRIDGE_MODEL_ID;
     env.BRIDGE_CONTROL_URL = `http://${clientHost.includes(":") && !clientHost.startsWith("[") ? `[${clientHost}]` : clientHost}:${this.config.port}`;
+    // Claude Code cuts MCP tool descriptions at about 4 KB by default. Droid sends
+    // its own tool descriptions uncut, and in Script mode the whole nested tool
+    // reference lives in the Script description, so forward them in full.
+    env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH ?? DROID_TOOL_DESCRIPTION_LIMIT;
     // The native worker receives its provider credential, never the host
     // controller's authority or Factory lifecycle generation.
     for (const name of ["BRIDGE_ADMIN_TOKEN", "BRIDGE_FACTORY_BINDING", "BRIDGE_FACTORY_LAUNCH_ID", "BRIDGE_LAUNCH_ID"]) delete env[name];

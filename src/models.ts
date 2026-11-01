@@ -87,7 +87,11 @@ export function withAccounts(models: BridgeModel[], accounts: string[]): BridgeM
     id: `${ACCOUNT_MODEL_PREFIX}${account}:${item.id}`, model: item.model, displayName: `${item.displayName} · ${account}` })))]);
 }
 
-/** Opaque Messages route: Droid rejects OpenAI-named IDs on the Anthropic transport. */
+/**
+ * Opaque Messages route. Droid 1.1.0 flags a `gpt-N`/`codex`
+ * model name on a non-OpenAI provider and prints an "Error:" provider-mismatch
+ * notice on every new session and failed turn, although the request works.
+ */
 export function droidModelId(id: string): string {
   return id.startsWith(CODEX_MODEL_PREFIX) ? `relay-${createHash("sha256").update(id).digest("hex").slice(0, 32)}` : id;
 }

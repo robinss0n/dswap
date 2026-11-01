@@ -9,6 +9,10 @@ const USER_CANCELLATIONS = new Set([
   "Tool execution cancelled by user", "工具执行已被用户取消", "ツール実行がユーザーによりキャンセルされました",
   "사용자가 도구 실행을 취소했습니다", "Esecuzione dello strumento annullata dall'utente",
   "Tool execution was interrupted", "Request interrupted by user",
+  // Non-interactive `droid exec` sends common:toolExecution.cancelledByUserShort.
+  "tool execution cancelled", "工具执行已取消", "도구 실행 취소됨", "esecuzione utensile annullata",
+  // Placeholder Droid writes when it rebuilds history for a tool call that never got a result.
+  "Tool execution was cancelled",
 ]);
 export const CANCELLED_TOOL_NOTE = "The user cancelled or interrupted this tool call in Droid. Preserve any work already done. Do not retry it or try another way. Acknowledge the cancellation in one short sentence, then end your turn.";
 export const CANCELLED_TURN_DENIAL = "BRIDGE_USER_CANCELLED: The user cancelled the previous tool call in Droid. Do not retry it or use any other tool now; acknowledge the cancellation and end your turn.";

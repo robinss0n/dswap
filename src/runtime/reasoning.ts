@@ -11,8 +11,10 @@ export interface CursorParameterSpec {
   values: Array<{ value: string }>;
 }
 
+export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface ClaudeReasoningOptions {
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  effort?: ClaudeEffort;
   thinking?: { type: "disabled" } | { type: "adaptive"; display: "summarized" } | { type: "enabled"; budgetTokens: number };
 }
 
@@ -137,6 +139,23 @@ export function claudeReasoningOptions(level: string | undefined): ClaudeReasoni
 
 export function claudeReasoningKey(request: ReasoningRequest): string {
   return JSON.stringify(claudeReasoningOptions(droidReasoningLevel(request)) ?? null);
+}
+
+/**
+ * The effort to apply to a running query when only the effort differs between
+ * two reasoning keys. SDK 0.3.300 `applyFlagSettings({ effortLevel })` reaches
+ * the next API call of an active tool loop. Thinking on/off and exact budgets
+ * cannot be changed that way (`setMaxThinkingTokens(0)` leaves 5.5 models on
+ * adaptive), so those return undefined.
+ */
+export function liveEffortChange(previousKey: string | undefined, nextKey: string): ClaudeEffort | undefined {
+  const parse = (key: string | undefined): ClaudeReasoningOptions | undefined => {
+    try { return key === undefined ? undefined : object(JSON.parse(key)) as ClaudeReasoningOptions | undefined; } catch { return undefined; }
+  };
+  const previous = parse(previousKey);
+  const next = parse(nextKey);
+  if (!previous?.effort || !next?.effort || previous.thinking?.type !== "adaptive" || next.thinking?.type !== "adaptive") return undefined;
+  return previous.effort === next.effort ? undefined : next.effort;
 }
 
 /** Synthetic hash input only; never send this reconstructed selection upstream. */

@@ -41,6 +41,15 @@ describe("request log", () => {
     }
   });
 
+  it("logs a request rejected before admission with its status and code but no content", async () => {
+    const { app, token, config } = await startTestBridge();
+    apps.push(app);
+    expect((await postMessages(app.url, token, { ...payload, output_config: { effort: "bogus" } })).status).toBe(400);
+    const lines = readFileSync(join(config.logDir, "bridge.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { event: string; data?: Record<string, unknown> });
+    expect(lines).toContainEqual(expect.objectContaining({ event: "request_rejected", data: expect.objectContaining({ path: "/v1/messages", status: 400, code: "invalid_reasoning" }) }));
+    expect(JSON.stringify(lines)).not.toContain("SECRET-");
+  });
+
   it("restores the redacted full body when BRIDGE_LOG_BODIES is set", async () => {
     vi.stubEnv("BRIDGE_LOG_BODIES", "1");
     const { app, token, config } = await startTestBridge();

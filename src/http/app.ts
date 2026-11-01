@@ -229,6 +229,11 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
     try {
       await route(req, res);
     } catch (error) {
+      // Session resolution rejects before a request is admitted; without this
+      // line a 409 the host shows to the user leaves no trace in bridge.jsonl.
+      logger.warn("request_rejected", error instanceof BridgeError
+        ? { path: req.url?.split("?")[0], status: error.status, code: error.code, message: error.message.slice(0, 300) }
+        : { path: req.url?.split("?")[0], status: 500, code: "internal_error" });
       writeError(res, error);
     }
   });

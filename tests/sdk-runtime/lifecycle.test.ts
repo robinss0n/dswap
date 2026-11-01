@@ -29,6 +29,7 @@ class FakeSdk implements SdkHandle {
   readonly mcpStatus = vi.fn(async () => [{ name: "droid", status: "connected", tools: [...this.handlers.keys()].map((name) => ({ name })) }]);
   readonly interrupt = vi.fn(async () => undefined);
   readonly close = vi.fn(() => this.release());
+  readonly applyFlagSettings = vi.fn(async (_settings: Record<string, unknown>) => undefined);
   private release = () => {};
   readonly untilClosed = new Promise<void>((resolve) => { this.release = resolve; });
   constructor(readonly respond: (input: SdkUserInput, index: number, sdk: FakeSdk) => AsyncGenerator<Record<string, unknown>>) {}
@@ -59,6 +60,7 @@ class FakeSdk implements SdkHandle {
     return {
       interrupt: this.interrupt,
       close: this.close,
+      applyFlagSettings: this.applyFlagSettings,
       mcpServerStatus: this.mcpStatus,
       accountInfo: async () => ({ subscriptionType: "max", apiKeySource: "none", email: "a@example.com" }),
       async *[Symbol.asyncIterator]() {
@@ -278,7 +280,7 @@ describe("official SDK streaming-input lifecycle (injected offline SDK)", () => 
     expect(sdk.calls).toHaveLength(2);
   });
 
-  it("resumes the same native session when reasoning effort changes and omits it when no level is sent", async () => {
+  it("applies an effort change to the running query, resumes for off, and omits reasoning when no level is sent", async () => {
     const sdk = new FakeSdk(async function* (_input, index) { yield success(`reply-${index}`); });
     const { runtime } = create(sdk, { models: modelCatalog });
     const s = session({ toolNames: ["TaskOutput"] });
@@ -289,27 +291,78 @@ describe("official SDK streaming-input lifecycle (injected offline SDK)", () => 
       model: "first-model", tools: [tool], output_config: { effort: "high" }, thinking: { type: "adaptive", display: "summarized" },
       messages: [user("first"), { role: "assistant", content: "reply-0" }, user("Use the higher effort")],
     }));
-    expect(sdk.close).toHaveBeenCalledTimes(1);
-    expect(sdk.calls).toHaveLength(2);
-    expect(sdk.calls[1]!.options).toMatchObject({ effort: "high", thinking: { type: "adaptive", display: "summarized" }, resume: "native-sdk-session", model: "native-model-a" });
-    expect(reply.sdkSessionId).toBe("native-sdk-session");
-    expect(reply.events).toContainEqual(expect.objectContaining({ type: "sdk_reasoning_changed", data: expect.objectContaining({ strategy: "resume", sdkSessionId: "native-sdk-session" }) }));
+    expect(sdk.applyFlagSettings).toHaveBeenCalledExactlyOnceWith({ effortLevel: "high" });
+    expect(sdk.close).not.toHaveBeenCalled();
+    expect(sdk.calls).toHaveLength(1);
+    expect(JSON.stringify(sdk.inputs[1])).toContain("Use the higher effort");
+    expect(reply.events).toContainEqual(expect.objectContaining({ type: "sdk_reasoning_changed", data: expect.objectContaining({ strategy: "live", level: "high", sdkSessionId: "native-sdk-session" }) }));
     const plain = new FakeSdk(async function* () { yield success("plain"); });
     const other = create(plain, { models: modelCatalog });
     await other.runtime.handle(request(session({ bridgeSessionId: "plain" }), "no level", { model: "first-model" }));
     expect(plain.calls[0]!.options.effort).toBeUndefined();
     expect(plain.calls[0]!.options.thinking).toBeUndefined();
-    await runtime.handle(request(s, "off", {
+    const off = await runtime.handle(request(s, "off", {
       model: "first-model", tools: [tool], thinking: { type: "between_tools" }, output_config: { effort: "high" },
       messages: [user("first"), { role: "assistant", content: "reply-0" }, user("Use the higher effort"), { role: "assistant", content: "reply-1" }, user("Turn reasoning off")],
     }));
-    expect(sdk.calls[2]!.options.thinking).toEqual({ type: "disabled" });
-    expect(sdk.calls[2]!.options.effort).toBeUndefined();
-    expect(sdk.calls[2]!.options.resume).toBe("native-sdk-session");
+    expect(sdk.applyFlagSettings).toHaveBeenCalledTimes(1);
+    expect(sdk.close).toHaveBeenCalledTimes(1);
+    expect(sdk.calls[1]!.options.thinking).toEqual({ type: "disabled" });
+    expect(sdk.calls[1]!.options.effort).toBeUndefined();
+    expect(sdk.calls[1]!.options.resume).toBe("native-sdk-session");
+    expect(off.events).toContainEqual(expect.objectContaining({ type: "sdk_reasoning_changed", data: expect.objectContaining({ strategy: "resume" }) }));
+  });
+
+  it("applies an effort changed mid tool loop before the pending result reaches the native turn", async () => {
+    const order: string[] = [];
+    const sdk = new FakeSdk(async function* (_input, index, fake) {
+      if (index === 0) {
+        yield { type: "assistant", message: { content: [{ type: "tool_use", id: "effort-tool", name: "mcp__droid__TaskOutput", input: {} }] } };
+        await fake.handlers.get("TaskOutput")!({}, { toolUseID: "effort-tool" });
+        order.push("result-delivered");
+      }
+      yield success(`reply-${index}`);
+    });
+    sdk.applyFlagSettings.mockImplementation(async () => { order.push("effort-applied"); });
+    const { runtime } = create(sdk);
+    const s = session({ toolNames: [tool.name] });
+    const medium = { tools: [tool], output_config: { effort: "medium" }, thinking: { type: "adaptive", display: "summarized" } };
+    await runtime.handle(request(s, "first", medium));
+    const done = await runtime.handle(request(s, [{ type: "tool_result", tool_use_id: "effort-tool", content: "complete" }],
+      { ...medium, output_config: { effort: "high" } }));
+    expect(done.response.stop_reason).toBe("end_turn");
+    expect(sdk.applyFlagSettings).toHaveBeenCalledExactlyOnceWith({ effortLevel: "high" });
+    expect(order).toEqual(["effort-applied", "result-delivered"]);
+    expect(sdk.close).not.toHaveBeenCalled();
+    expect(sdk.calls).toHaveLength(1);
+  });
+
+  it("defers an effort change to the next turn when the query cannot apply it live", async () => {
+    const sdk = new FakeSdk(async function* (_input, index) { yield success(`reply-${index}`); });
+    sdk.applyFlagSettings.mockRejectedValueOnce(new Error("control request failed"));
+    const { runtime } = create(sdk, { models: modelCatalog });
+    const s = session({ toolNames: [tool.name] });
+    const adaptive = { type: "adaptive", display: "summarized" };
+    await runtime.handle(request(s, "first", { model: "first-model", tools: [tool], output_config: { effort: "low" }, thinking: adaptive }));
+    await runtime.handle(request(s, "second", { model: "first-model", tools: [tool], output_config: { effort: "high" }, thinking: adaptive,
+      messages: [user("first"), { role: "assistant", content: "reply-0" }, user("second")] }));
+    expect(sdk.close).toHaveBeenCalledOnce();
+    expect(sdk.calls[1]!.options).toMatchObject({ effort: "high", resume: "native-sdk-session" });
+  });
+
+  it("applies a GPT root effort change live", async () => {
+    const sdk = new FakeSdk(async function* (_input, index) { yield success(`reply-${index}`); });
+    const { runtime } = create(sdk, { models: modelCatalog });
+    const s = session({ toolNames: [tool.name] });
+    await runtime.handle(request(s, "first", { model: "first-model", tools: [tool], reasoning_effort: "high", thinking: { type: "enabled", budget_tokens: 24576 } }));
+    await runtime.handle(request(s, "next", { model: "first-model", tools: [tool], reasoning_effort: "xhigh", thinking: { type: "enabled", budget_tokens: 24576 },
+      messages: [user("first"), { role: "assistant", content: "reply-0" }, user("next")] }));
+    expect(sdk.applyFlagSettings).toHaveBeenCalledExactlyOnceWith({ effortLevel: "xhigh" });
+    expect(sdk.close).not.toHaveBeenCalled();
+    expect(sdk.calls).toHaveLength(1);
   });
 
   it.each([
-    { label: "GPT root effort", first: { reasoning_effort: "high", thinking: { type: "enabled", budget_tokens: 24576 } }, next: { reasoning_effort: "xhigh", thinking: { type: "enabled", budget_tokens: 24576 } }, expected: { effort: "xhigh", thinking: { type: "adaptive", display: "summarized" } } },
     { label: "exact Haiku budget", first: { thinking: { type: "enabled", budget_tokens: 8192 } }, next: { thinking: { type: "enabled", budget_tokens: 12345 } }, expected: { thinking: { type: "enabled", budgetTokens: 12345 } } },
   ])("resumes the same native session for $label changes", async ({ first, next, expected }) => {
     const sdk = new FakeSdk(async function* (_input, index) { yield success(`reply-${index}`); });
@@ -737,7 +790,7 @@ describe("official SDK streaming-input lifecycle (injected offline SDK)", () => 
     expect(delivered).toEqual({ content: [{ type: "text", text: "accepted" }], isError: false });
   });
 
-  it("defers a hot-add reasoning change until pending Opus callbacks finish, then resumes", async () => {
+  it("applies a reasoning change that arrives with a hot-add result to the running Opus query", async () => {
     const search = { name: "ToolSearch", input_schema: { type: "object" as const, properties: {} } };
     const fresh = { name: "rea___inspect_artifact", input_schema: { type: "object" as const, properties: {} } };
     const sdk = new FakeSdk(async function* (_input, index, fake) {
@@ -757,10 +810,12 @@ describe("official SDK streaming-input lifecycle (injected offline SDK)", () => 
     expect(done.response.stop_reason).toBe("end_turn");
     expect(sdk.calls).toHaveLength(1);
     expect(sdk.calls[0]!.options.effort).toBe("high");
+    expect(sdk.applyFlagSettings).toHaveBeenCalledExactlyOnceWith({ effortLevel: "xhigh" });
     await runtime.handle(request(s, "continue", { ...opts, tools: [search, fresh], output_config: { effort: "xhigh" },
       messages: [user("load REA"), { role: "assistant", content: "reply-0" }, user("continue")] }));
-    expect(sdk.calls).toHaveLength(2);
-    expect(sdk.calls[1]!.options).toMatchObject({ effort: "xhigh", resume: "native-sdk-session" });
+    expect(sdk.calls).toHaveLength(1);
+    expect(sdk.close).not.toHaveBeenCalled();
+    expect(sdk.applyFlagSettings).toHaveBeenCalledOnce();
   });
 
   it("adds ToolSearch discoveries before releasing its handler in the same SDK turn", async () => {
@@ -1942,4 +1997,45 @@ it("reports the loaded Claude profile origin without helper commands or URL secr
   expect(runtime.describe().claudeProfile).toEqual({ settingsPath: "/fixture/japan/settings.json", upstreamOrigin: "http://127.0.0.1:18319" });
   expect(JSON.stringify(runtime.describe())).not.toMatch(/HIDDEN|private/);
   expect(sdk.calls).toHaveLength(0);
+});
+
+describe("Droid Script mode (desktop profile)", () => {
+  // Droid 1.1.0 in Script mode advertises Script/WaitForScript and keeps file and shell
+  // tools inside Script; on the Anthropic wire a Script call is `{ script }`.
+  const scriptTools = ["Script", "WaitForScript", "AskUser", "TodoWrite"].map((name) => ({ name, input_schema: { type: "object" as const, properties: {} } }));
+  const source = "// @input: body <<'EOF'\nhello\nEOF\nconst r = await tools.Create({ file_path: '/abs/a.txt', content: inputs.body });\ntext(r);";
+  const scriptResult = "File created\n\nstatus: completed · 0.4s";
+
+  it("passes a Script call and its result through unchanged while native writes stay blocked", async () => {
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "relay-script-project-")));
+    const reminder: ContentBlock = { type: "text", text: `<system-reminder>\n\nUser system info (fixture)\n\n% pwd\n${project}\n</system-reminder>` };
+    const seen: { result?: unknown } = {};
+    const sdk = new FakeSdk(async function* (_input, index, fake) {
+      if (index !== 0) return;
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "script-1", name: "mcp__droid__Script", input: { script: source } }] } };
+      seen.result = await fake.handlers.get("Script")!({ script: source }, { toolUseID: "script-1" });
+      yield { type: "assistant", message: { content: [{ type: "text", text: "Created." }] } };
+      yield success("Created.");
+    });
+    const dataDir = join(mkdtempSync(join(tmpdir(), "relay-script-sdk-")), "bridge-data");
+    const { runtime } = create(sdk, { desktopProfile: true, permissionMode: "ask", dataDir, toolWaitMs: 5_000, requestTimeoutMs: 5_000 });
+    const s = session();
+    const opening = user([reminder, { type: "text", text: "Create a.txt" }]);
+    const first = await runtime.handle(request(s, "unused", { tools: scriptTools, messages: [opening] }));
+    const options = sdk.calls[0]!.options;
+    // The Script description carries the whole nested tool reference; Claude Code must not cut it.
+    expect(options.env).toMatchObject({ CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH: process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH ?? "1000000" });
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Bash", "Write", "Edit", "MultiEdit"]));
+    expect([...sdk.handlers.keys()]).toEqual(expect.arrayContaining(["Script", "WaitForScript", "AskUser", "TodoWrite"]));
+    expect(first.response.stop_reason).toBe("tool_use");
+    expect(first.response.content).toContainEqual(expect.objectContaining({ type: "tool_use", id: "script-1", name: "Script", input: { script: source } }));
+
+    const assistant: Message = { role: "assistant", content: first.response.content };
+    const done = await runtime.handle(request(s, "unused", { tools: scriptTools, messages: [opening, assistant,
+      user([{ type: "tool_result", tool_use_id: "script-1", content: scriptResult }])] }));
+    expect(seen.result).toMatchObject({ isError: false, content: [{ type: "text", text: scriptResult }] });
+    expect(done.response.stop_reason).toBe("end_turn");
+    expect(done.response.content).toContainEqual({ type: "text", text: "Created." });
+    expect(sdk.calls).toHaveLength(1);
+  });
 });
