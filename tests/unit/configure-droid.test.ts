@@ -44,18 +44,20 @@ describe("configure Droid", () => {
     }
   });
 
-  it("gives an exact Haiku 5.5 route its own base and keeps aliases, Opus and Codex on the Sonnet base", () => {
+  it("gives Haiku 5.5 and Opus 5.5 routes their own base, by exact ID or resolved alias, and keeps the rest on the Sonnet base", () => {
     const { settings, args } = paths();
     const catalog = [
       { id: "haiku", model: "haiku", displayName: "Claude Code · Haiku" },
       { id: "claude-haiku-5-5", model: "claude-haiku-5-5", displayName: "Claude Code · Haiku 5.5" },
       { id: "account:2:claude-haiku-5-5", model: "claude-haiku-5-5", displayName: "Claude Code · Haiku 5.5 · 2" },
       { id: "claude-opus-5-5", model: "claude-opus-5-5", displayName: "Claude Code · Opus 5.5" },
+      { id: "opus", model: "opus", displayName: "Claude Code · Opus", upstream: "claude-opus-5-5" },
+      { id: "account:2:opus", model: "opus", displayName: "Claude Code · Opus · 2" },
       { id: "codex:default:claude-haiku-5-5", model: "claude-haiku-5-5", provider: "codex" as const, displayName: "Codex · odd" },
     ];
     configureDroid(args.slice(0, -2), { BRIDGE_CLIENT_TOKEN: "test" }, catalog);
     const bases = JSON.parse(readFileSync(settings, "utf8")).customModels.map((entry: { baseModelId: string }) => entry.baseModelId);
-    expect(bases).toEqual(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-sonnet-5-5"]);
+    expect(bases).toEqual(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-sonnet-5-5"]);
   });
 
   it("writes literal tokens privately, preserves other settings, and keeps the original backup across repeats", () => {

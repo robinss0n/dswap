@@ -13,8 +13,8 @@ import { listGoogleAccounts } from "../src/upstream/google-accounts.js";
 import { coerceCursorCatalog, cursorMenuFromCatalog, formatCursorCatalog, type CursorCatalogItem } from "../src/runtime/cursor/catalog.js";
 import { CURSOR_LOGIN_COMMAND, cursorApiKey, cursorCredentialStatus, cursorExpiryWarning, formatCursorStatus, loginCursor, type CursorLogin } from "../src/runtime/cursor/credentials.js";
 import { cursorLoginFromSdk, loadCursorSdk, type CursorPlatformModule } from "../src/runtime/cursor/sdk-load.js";
-import { assertClaudeCredential, claudeConfigModels, readClaudeConfig } from "../src/upstream/claude-config.js";
-import { configureDroid, DROID_BASE_MODELS } from "./configure-droid.js";
+import { assertClaudeCredential, claudeConfigModels, readClaudeConfig, withClaudeUpstream } from "../src/upstream/claude-config.js";
+import { configureDroid, DIRECT_BASE_MODELS } from "./configure-droid.js";
 
 const LABEL = "ai.factory-cc.bridge";
 /** Linux runs the same launcher as a systemd user service. */
@@ -211,8 +211,8 @@ function syncModels(deps: DesktopDependencies, install: Installation, cursorMenu
   // Deliberately use exactly the environment launchd will receive. Never inherit shell credentials.
   const config = readDesktopClaudeConfig(deps, install);
   assertClaudeCredential(config);
-  const claude = install.models ? modelsFromIds(install.models, "claude-config").map(explicitLabel)
-    : claudeConfigModels(config).models.map((model) => ({ ...model, displayName: `Claude Code · ${model.displayName.replace(/^Claude /, "")}` }));
+  const claude = withClaudeUpstream(config, install.models ? modelsFromIds(install.models, "claude-config").map(explicitLabel)
+    : claudeConfigModels(config).models.map((model) => ({ ...model, displayName: `Claude Code · ${model.displayName.replace(/^Claude /, "")}` })));
   const codex = install.codexModels?.length ? codexModels(install.codexModels, codexAccountsFor(install)) : [];
   const google = install.googleModels?.length ? googleModels(install.googleModels, googleAccountsFor(install)) : [];
   const models = [...(install.accounts ? withAccounts(claude, install.accounts) : claude), ...(cursorMenu ?? []), ...codex, ...google,
@@ -396,7 +396,7 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     const loaded = deps.platform === "linux"
       ? deps.run("systemctl", ["--user", "is-active", "--quiet", UNIT]).status === 0
       : deps.run("launchctl", ["print", `${domain}/${LABEL}`]).status === 0;
-    const scriptBases = DROID_BASE_MODELS.filter((base) => scriptToolModels(deps.home).includes(base));
+    const scriptBases = DIRECT_BASE_MODELS.filter((base) => scriptToolModels(deps.home).includes(base));
     const { env, now } = cursorClock(deps);
     const cursorStatus = cursorCredentialStatus(paths.data, env, now);
     const cursorWarning = cursorExpiryWarning(cursorStatus, now);
@@ -411,7 +411,7 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
         expires: cursorStatus.expiresAt ?? (cursorStatus.source === "env" ? "unknown" : "none"),
         account: cursorStatus.accountPresent ? "present" : "absent",
       },
-      ...(scriptBases.length ? { warning: `Droid now runs ${scriptBases.join(", ")} in Script mode, so models on that base lose direct Read/Execute/Create/Edit tools. Update factory-cc to a base model outside script_tool_models.` } : {}),
+      ...(scriptBases.length ? { warning: `Droid now runs ${scriptBases.join(", ")} in Script mode, so entries meant for direct tools on that base now get Script mode instead. Update factory-cc to a base model outside script_tool_models.` } : {}),
       ...(cursorWarning ? { cursorWarning } : {}) };
   }
   if (action === "uninstall") {
