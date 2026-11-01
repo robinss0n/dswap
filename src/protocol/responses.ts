@@ -215,6 +215,11 @@ function parseInput(input: unknown): Conversation {
           lastWasOutput = true;
           break;
         }
+        // Keep host message boundaries: Droid can send an error or tool result
+        // before a separate environment-reminder message. Merging those user
+        // messages hides the leading reminder from workspace resolution (and
+        // would require trusting reminders embedded after arbitrary user text).
+        flush();
         add("user", content);
         break;
       }

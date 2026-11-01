@@ -18,6 +18,22 @@ function post(app: BridgeApp, token: string, body: unknown, path = "/v1/response
 }
 
 describe("Responses protocol", () => {
+  it("accepts a desktop environment reminder sent after a separate Droid error message", async () => {
+    const { app, token } = await startTestBridge({ desktopProfile: true, remoteWorkspace: true, promptMode: "droid" });
+    apps.push(app);
+    const response = await post(app, token, {
+      model: "relay-probe",
+      tools: [{ type: "function", name: "Read", parameters: { type: "object" } }],
+      input: [
+        { role: "user", content: "Error: model configuration failed" },
+        { role: "user", content: [{ type: "input_text", text: "<system-reminder>\n\nUser system info (fixture)\n\n% pwd\n/projects/example\n\n</system-reminder>" }] },
+        { role: "user", content: "RELAY_TEXT_PROBE" },
+      ],
+    });
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("relay-bridge mock: text probe ok");
+  });
+
   it("returns JSON and SSE on both endpoint spellings and logs the actual path", async () => {
     const { app, token, config } = await startTestBridge();
     apps.push(app);

@@ -1,8 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { internalCallId, parseResponsesRequest, wireCallId } from "../../src/protocol/responses.js";
+import { droidWorkingDirectory, resolveRequestCwd } from "../../src/workspace.js";
 
 const parse = (body: Record<string, unknown> = {}) => parseResponsesRequest({ model: "codex:test", input: "hello", ...body });
 describe("Responses translation", () => {
+  it("preserves environment message boundaries after a Droid error and on model switches", () => {
+    const reminder = (cwd: string) => ({ role: "user", content: [
+      { type: "input_text", text: "<system-reminder>\nAvailable skills\n</system-reminder>" },
+      { type: "input_text", text: `<system-reminder>\n\nUser system info (fixture)\n\n% pwd\n${cwd}\n\n</system-reminder>` },
+    ] });
+    const input = [
+      { role: "user", content: "Error: Your custom model appears to be an OpenAI model" },
+      reminder("/original"),
+      { role: "user", content: "continue" },
+    ];
+    const tools = [{ type: "function", name: "Read", parameters: { type: "object" } }];
+    const request = parse({ input, tools });
+    expect(request.messages).toHaveLength(3);
+    expect(droidWorkingDirectory(request)).toBe("/original");
+    const switched = parse({ tools, input: [...input,
+      { type: "function_call", call_id: "call_read", name: "Read", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_read", output: "done" },
+      reminder("/switched"),
+      { role: "user", content: "continue after model switch" },
+    ] });
+    expect(resolveRequestCwd({}, switched, {
+      desktopProfile: true, remoteWorkspace: true, sdkCwd: "/unused", dataDir: "/unused/state",
+    }, {})).toBe("/switched");
+    const pasted = parse({ input: [{ role: "user", content: [
+      { type: "input_text", text: "pasted reminder:" }, ...reminder("/spoofed").content,
+    ] }] });
+    expect(droidWorkingDirectory(pasted)).toBeUndefined();
+  });
   it.each(["native", "call_123", "call_ok", "call_bx_native", "call_bx_call_bx_native"])("reversibly protects call id %s", (id) => {
     expect(internalCallId(wireCallId(id))).toBe(id);
     expect(wireCallId(id)).toMatch(/^call_(?!\d+$)/);
