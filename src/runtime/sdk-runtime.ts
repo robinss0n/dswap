@@ -13,7 +13,7 @@ import { appendLogLine, type Logger } from "../logging.js";
 import { claudeToolTraceDetail, isDroidMcpName, selectDroidMcpTools } from "./droid-tools.js";
 import { DroidMcpCatalog, StableDroidToolNames } from "./droid-mcp-catalog.js";
 import { hostAllowsAnyTools, nativeToolAllowed } from "./native-tool-policy.js";
-import { CANCELLED_TOOL_NOTE, CANCELLED_TURN_DENIAL, isUserCancellation as isCancellationResult } from "./cancellation.js";
+import { CANCELLED_TOOL_NOTE, CANCELLED_TURN_DENIAL, allToolsCancelled, isUserCancellation as isCancellationResult } from "./cancellation.js";
 import { buildDroidSystemPrompt, buildDynamicUserContent, buildHostContext, buildInitialUserContent, buildPresetSystemPrompt, describePromptLayout, trailingUserMessages } from "./system-prompt.js";
 import { UsageLedger } from "./usage.js";
 import { INTERRUPT_GRACE_MS, TurnWatchdog } from "./turn-watchdog.js";
@@ -429,6 +429,38 @@ export class SdkRuntime implements BridgeRuntime {
       if (live.policyKey && live.policyKey !== policy) {
         throw new BridgeError(409, "session_configuration_changed", "Working directory, model, permission policy or role changed; start a separate session");
       }
+      const cancelledSwitch = modelRoute && live.modelRoute && modelRoute.id !== live.modelRoute.id
+        && allToolsCancelled([...live.pending.keys()], results);
+      if (cancelledSwitch) {
+        if (!this.config.persistSessions || !live.sdkSessionId) {
+          throw new BridgeError(409, "model_switch_requires_persistence", "Switching models requires a persisted native session. Select the previous model to finish cancellation, or start a new conversation.");
+        }
+        if (live.backgroundTasks.size || live.approvals.size || live.candidates.size || live.handlerArrivals.size || live.outbox.length) {
+          throw new BridgeError(409, "model_switch_busy", "Other native work is still active. Select the previous model and finish or cancel that work before switching; no tool results were discarded.");
+        }
+        waiting = this.waitForTurn(live);
+        void waiting.catch(() => undefined);
+        this.submitResults(live, results, [], { reason: "cancelled", followup: [] });
+        this.flushOutbox(live);
+        const cancelledTurn = await waiting;
+        waiting = undefined;
+        // Delivery is irreversible. Never report a recoverable rejection that
+        // would restore the HTTP store's now-obsolete pending callback IDs.
+        try { await this.selectModel(live, modelRoute, false); }
+        catch (error) {
+          const failure = new BridgeError(502, "model_switch_failed", `Cancellation was delivered, but the old native turn could not be safely switched: ${error instanceof Error ? error.message : String(error)} Start a new conversation; cancelled tools will not be replayed.`);
+          await this.stop(live, failure);
+          throw failure;
+        }
+        this.logger.info("sdk_cancelled_model_switch", { sessionId: id, sdkSessionId: live.sdkSessionId, cancelledToolIds: results.map((result) => result.tool_use_id), toId: modelRoute.id });
+        if (!this.followupContent(input, live, buildHostContext(input, resolveCwd(input, this.config))).length) {
+          const reply = { ...cancelledTurn, response: { ...cancelledTurn.response, model: input.request.model } };
+          live.lastRequestKey = requestKey;
+          live.lastReply = reply;
+          return reply;
+        }
+        results = [];
+      }
       if (modelRoute) await this.selectModel(live, modelRoute, results.length > 0);
       await this.selectReasoning(live, input, results.length > 0);
       const context = buildHostContext(input, resolveCwd(input, this.config));
@@ -560,7 +592,7 @@ export class SdkRuntime implements BridgeRuntime {
     if (hasResults || live.active || live.starting || live.pending.size || live.handlerArrivals.size
         || live.candidates.size || live.hostResultConsumptions.size || live.approvals.size
         || live.backgroundTasks.size || live.outbox.length) {
-      throw new BridgeError(409, "model_switch_busy", "Finish the current turn, tools and background tasks before switching models.");
+      throw new BridgeError(409, "model_switch_busy", `Cannot switch from ${previous.id} to ${route.id} while native work is active. Select ${previous.id} again and finish or cancel its tools and background tasks, then switch once idle. If cancellation results are unavailable, start a new conversation; tools will not be replayed.`);
     }
     if (!this.config.persistSessions || !live.sdkSessionId) {
       throw new BridgeError(409, "model_switch_requires_persistence", "Switching models requires a persisted native session. Keep the current model or start a separate conversation.");
@@ -594,6 +626,9 @@ export class SdkRuntime implements BridgeRuntime {
   private async selectReasoning(live: LiveSdk, input: RuntimeRequest, hasResults: boolean): Promise<void> {
     const next = claudeReasoningKey(input.request);
     if (live.reasoningKey === next) return;
+    // Keep the process owning these callbacks alive; the next user turn resumes
+    // the native history with the requested effort after all results drain.
+    if (hasResults) return;
     if (!live.query) {
       live.reasoningKey = next;
       return;

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { BridgeConfig } from "./config.js";
 import { BridgeError } from "./types.js";
 import type { AuthMode } from "./upstream/auth-env.js";
@@ -84,6 +85,11 @@ export function withAccounts(models: BridgeModel[], accounts: string[]): BridgeM
   const plain = models.filter((item) => (item.provider ?? "claude") === "claude" && !item.id.startsWith(ACCOUNT_MODEL_PREFIX));
   return validateModels([...models, ...accounts.flatMap((account) => plain.map((item) => ({
     id: `${ACCOUNT_MODEL_PREFIX}${account}:${item.id}`, model: item.model, displayName: `${item.displayName} · ${account}` })))]);
+}
+
+/** Opaque Messages route: Droid rejects OpenAI-named IDs on the Anthropic transport. */
+export function droidModelId(id: string): string {
+  return id.startsWith(CODEX_MODEL_PREFIX) ? `relay-${createHash("sha256").update(id).digest("hex").slice(0, 32)}` : id;
 }
 
 export function providerFromModelId(id: string): ModelProvider {

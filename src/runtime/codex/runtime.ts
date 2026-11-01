@@ -15,7 +15,7 @@ import { cachedCodexAccountStatus, codexAccountHome, codexMcpServerNames, listCo
 import { CANCELLED_TOOL_NOTE, CANCELLED_TURN_DENIAL, isUserCancellation } from "../cancellation.js";
 import { deferredToolDefinitions } from "../cursor/deferred-catalog.js";
 import { hostAllowsAnyTools } from "../native-tool-policy.js";
-import { droidReasoningLevel } from "../reasoning.js";
+import { droidReasoningEffort } from "../reasoning.js";
 import { buildDynamicUserContent, buildInitialUserContent } from "../system-prompt.js";
 import type { BridgeRuntime, RetiredSession, RuntimeControl, RuntimeHostCall, RuntimeHostCompletion, RuntimeHostEnd, RuntimeRequest, RuntimeTurn, StreamSink } from "../types.js";
 import { CodexAppServer, CodexRpcError, type AppServerOptions } from "./app-server.js";
@@ -239,6 +239,7 @@ export class CodexRuntime implements BridgeRuntime {
 
   async handle(input: RuntimeRequest, sink?: StreamSink): Promise<RuntimeTurn> {
     if (this.closing) throw new BridgeError(503, "bridge_shutting_down", "Bridge is shutting down");
+    droidReasoningEffort(input.request);
     const route = codexFromModelId(input.request.model);
     if (!route || !this.config.models?.some((model) => model.id === input.request.model && model.provider === "codex")) {
       throw new BridgeError(400, "unknown_model", "This Codex model is not on the menu.");
@@ -552,7 +553,7 @@ export class CodexRuntime implements BridgeRuntime {
     const blocks = !live.sent && input.request.messages.length > 1 ? buildInitialUserContent(droidInput, cwd) : buildDynamicUserContent(droidInput, cwd);
     const items = [...this.takeLateInput(live), ...notes.map((text) => ({ type: "text", text })), ...codexUserInput(blocks)];
     live.turnDone = new Promise((resolve) => { live.finishTurn = resolve; });
-    const level = droidReasoningLevel(input.request);
+    const level = droidReasoningEffort(input.request);
     const started = await live.server!.request<{ turn: { id: string } }>("turn/start", {
       threadId: live.threadId, input: items, model, ...(level && EFFORT[level] ? { effort: EFFORT[level] } : {}),
     });

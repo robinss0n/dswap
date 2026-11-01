@@ -75,8 +75,8 @@ describe("reasoning level changed during a tool loop", () => {
     expect(result).toMatchObject({ reason: "tool-use-id", match: { bridgeSessionId: "bridge-a" } });
   });
 
-  it("still refuses for Claude, whose effort is fixed for the running process", () => {
-    expect(() => resolveSession([parked(undefined, "sonnet")], headers, resultAt("sonnet", "high"), { cwd }))
-      .toThrow(/start a new session/);
+  it("keeps Claude callback ownership while the runtime defers the process-level effort change", () => {
+    expect(resolveSession([parked(undefined, "sonnet")], headers, resultAt("sonnet", "high"), { cwd }))
+      .toMatchObject({ reason: "tool-use-id", match: { bridgeSessionId: "bridge-a" } });
   });
 });

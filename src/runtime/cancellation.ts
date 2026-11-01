@@ -13,6 +13,16 @@ const USER_CANCELLATIONS = new Set([
 export const CANCELLED_TOOL_NOTE = "The user cancelled or interrupted this tool call in Droid. Preserve any work already done. Do not retry it or try another way. Acknowledge the cancellation in one short sentence, then end your turn.";
 export const CANCELLED_TURN_DENIAL = "BRIDGE_USER_CANCELLED: The user cancelled the previous tool call in Droid. Do not retry it or use any other tool now; acknowledge the cancellation and end your turn.";
 
+export function allToolsCancelled(
+  pendingIds: readonly string[],
+  results: Array<{ tool_use_id: string; content: string | ContentBlock[]; is_error?: boolean }>,
+): boolean {
+  return pendingIds.length > 0 && pendingIds.every((id) => {
+    const receipts = results.filter((result) => result.tool_use_id === id);
+    return receipts.length > 0 && receipts.every((result) => isUserCancellation(result.content, result.is_error));
+  });
+}
+
 export function isUserCancellation(content: string | ContentBlock[] | undefined, isError: boolean | undefined): boolean {
   if (!isError) return false;
   const text = typeof content === "string" ? content

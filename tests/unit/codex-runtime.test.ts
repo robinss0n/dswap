@@ -360,6 +360,32 @@ describe("CodexRuntime", () => {
     expect(runtime.protectedSessionIds()).not.toContain("bridge-codex");
   });
 
+  it("forwards a GPT behavioral profile's root effort instead of dropping it", async () => {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const pending = runtime.handle(input([{ role: "user", content: "go" }], {
+      reasoning_effort: "xhigh", thinking: { type: "enabled", budget_tokens: 24576 },
+    }));
+    await tick();
+    expect(fake.state.turnStarts[0].effort).toBe("xhigh");
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    await pending;
+    await runtime.close();
+  });
+
+  it("runs an exact thinking budget at the nearest named Codex effort", async () => {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const pending = runtime.handle(input([{ role: "user", content: "go" }], {
+      thinking: { type: "enabled", budget_tokens: 12345 },
+    }));
+    await tick();
+    expect(fake.state.turnStarts[0].effort).toBe("medium");
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    await pending;
+    await runtime.close();
+  });
+
   it.each([["off", "low"], ["xhigh", "xhigh"], ["max", "max"]])("maps Droid level %s to Codex effort %s", async (level, effort) => {
     const fake = fakeServer();
     const runtime = new CodexRuntime(config(), logger, { open: fake.open });

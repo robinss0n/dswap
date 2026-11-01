@@ -13,7 +13,7 @@ import { coerceCursorCatalog, cursorMenuFromCatalog, formatCursorCatalog, type C
 import { CURSOR_LOGIN_COMMAND, cursorApiKey, cursorCredentialStatus, cursorExpiryWarning, formatCursorStatus, loginCursor, type CursorLogin } from "../src/runtime/cursor/credentials.js";
 import { cursorLoginFromSdk, loadCursorSdk, type CursorPlatformModule } from "../src/runtime/cursor/sdk-load.js";
 import { assertClaudeCredential, claudeConfigModels, readClaudeConfig } from "../src/upstream/claude-config.js";
-import { configureDroid, DROID_BASE_MODEL } from "./configure-droid.js";
+import { configureDroid, DROID_BASE_MODELS } from "./configure-droid.js";
 
 const LABEL = "ai.factory-cc.bridge";
 /** Linux runs the same launcher as a systemd user service. */
@@ -223,10 +223,16 @@ function scriptToolModels(home: string): string[] {
     return Array.isArray(models) ? models.filter((model): model is string => typeof model === "string") : [];
   } catch { return []; }
 }
-/** claude-opus-5-5 -> "Claude Code · Opus 5.5 (claude-opus-5-5)"; other IDs are shown as given. */
+/**
+ * claude-opus-5-5 -> "Claude Code · Opus 5.5 (claude-opus-5-5)"; opus -> "Claude Code · Opus"; other IDs are shown as given.
+ * Bare aliases match the labels of an unpinned install because Droid derives selection IDs from
+ * display names, so a relabel on restart orphans every open session using that entry.
+ */
 function explicitLabel(model: BridgeModel): BridgeModel {
+  const capitalize = (word: string) => `${word[0]!.toUpperCase()}${word.slice(1)}`;
   const match = /^claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/.exec(model.id);
-  const name = match ? `${match[1]![0]!.toUpperCase()}${match[1]!.slice(1)} ${match[2]}.${match[3]} (${model.id})` : model.id;
+  const name = match ? `${capitalize(match[1]!)} ${match[2]}.${match[3]} (${model.id})`
+    : /^(opus|sonnet|haiku|fable)$/.test(model.id) ? capitalize(model.id) : model.id;
   return { ...model, displayName: `Claude Code · ${name}` };
 }
 /** Pinned Codex accounts, else `auto` when there are several Codex logins and `default` when there is one. */
@@ -376,7 +382,7 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     const loaded = deps.platform === "linux"
       ? deps.run("systemctl", ["--user", "is-active", "--quiet", UNIT]).status === 0
       : deps.run("launchctl", ["print", `${domain}/${LABEL}`]).status === 0;
-    const scriptMode = scriptToolModels(deps.home).includes(DROID_BASE_MODEL);
+    const scriptBases = DROID_BASE_MODELS.filter((base) => scriptToolModels(deps.home).includes(base));
     const { env, now } = cursorClock(deps);
     const cursorStatus = cursorCredentialStatus(paths.data, env, now);
     const cursorWarning = cursorExpiryWarning(cursorStatus, now);
@@ -391,7 +397,7 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
         expires: cursorStatus.expiresAt ?? (cursorStatus.source === "env" ? "unknown" : "none"),
         account: cursorStatus.accountPresent ? "present" : "absent",
       },
-      ...(scriptMode ? { warning: `Droid now runs ${DROID_BASE_MODEL} in Script mode, so these models lose direct Read/Execute/Create/Edit tools. Update factory-cc to a base model outside script_tool_models.` } : {}),
+      ...(scriptBases.length ? { warning: `Droid now runs ${scriptBases.join(", ")} in Script mode, so models on that base lose direct Read/Execute/Create/Edit tools. Update factory-cc to a base model outside script_tool_models.` } : {}),
       ...(cursorWarning ? { cursorWarning } : {}) };
   }
   if (action === "uninstall") {

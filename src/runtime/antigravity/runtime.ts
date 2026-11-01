@@ -13,7 +13,7 @@ import { droidAntigravity, REPLACE_MARKER, type AntigravityExecutable } from "..
 import { antigravityExecutable, GOOGLE_AUTH_METHOD, googleAccountHome, initializeAgent, listGoogleAccounts, openAgent, pickGoogleAccount, probeGoogleAccount } from "../../upstream/google-accounts.js";
 import { toCursorToolResult } from "../cursor/tools.js";
 import { buildDynamicUserContent, buildInitialUserContent } from "../system-prompt.js";
-import { droidReasoningLevel, mapReasoningValue } from "../reasoning.js";
+import { droidReasoningEffort, mapReasoningValue } from "../reasoning.js";
 import type { BridgeRuntime, RetiredSession, RuntimeControl, RuntimeHostCall, RuntimeHostCompletion, RuntimeHostEnd, RuntimeRequest, RuntimeTurn, StreamSink } from "../types.js";
 import type { AcpClient } from "./acp-client.js";
 import type { FallbackAlerts } from "../../notify.js";
@@ -151,6 +151,7 @@ export class AntigravityRuntime implements BridgeRuntime {
 
   async handle(input: RuntimeRequest, sink?: StreamSink): Promise<RuntimeTurn> {
     if (this.closing) throw new BridgeError(503, "bridge_shutting_down", "Bridge is shutting down");
+    droidReasoningEffort(input.request);
     const route = googleFromModelId(input.request.model);
     if (!route || !this.config.models?.some((model) => model.id === input.request.model && model.provider === "google")) {
       throw new BridgeError(400, "unknown_model", "This Google model is not on the menu.");
@@ -359,7 +360,7 @@ export class AntigravityRuntime implements BridgeRuntime {
    * alone; a refused level keeps the current one rather than failing the turn.
    */
   private async applyReasoning(live: LiveGoogle, input: RuntimeRequest): Promise<void> {
-    const level = droidReasoningLevel(input.request);
+    const level = droidReasoningEffort(input.request);
     const option = live.configOptions?.find((item) => item.id === "thinking_level");
     if (!level || !option) return;
     const allowed = (option.options ?? []).flatMap((item) => item.options ?? [item]).map((item) => item.value).filter((value): value is string => Boolean(value));

@@ -70,6 +70,14 @@ function setup(initial: string, thinking = true, menu: string[] = [initial], rep
 }
 
 describe("AntigravityRuntime", () => {
+  it("runs an exact thinking budget at the nearest named thinking_level", async () => {
+    const { runtime, input, calls } = setup("gemini-3.8-flash");
+    await runtime.handle(input({ thinking: { type: "enabled", budget_tokens: 12345 } }));
+    const levels = calls.filter(([method, params]) => method === "session/set_config_option" && params.configId === "thinking_level").map(([, params]) => params.value);
+    expect(levels).toEqual(["medium"]);
+    await runtime.close();
+  });
+
   it("introduces itself as Zed, the identity Antigravity offers its full model list to", async () => {
     let sent: any;
     await initializeAgent({ request: async (_method: string, params: any) => { sent = params; return {}; } } as unknown as AcpClient);
