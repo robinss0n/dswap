@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listAccounts } from "../src/upstream/cswap.js";
+import { cswapExecutable } from "../src/upstream/cswap-runtime.js";
 import { listCodexAccounts, probeCodexAccount } from "../src/upstream/codex-accounts.js";
 import { listGoogleAccounts, pingGoogleAccount, probeGoogleAccount } from "../src/upstream/google-accounts.js";
 import {
@@ -88,7 +89,7 @@ async function gather(config: PrimeConfig, state: PrimeState, now: number): Prom
 /** Sends the one-line prompt as that account; returns the model used. */
 async function ping(target: PrimeTarget): Promise<string> {
   if (target.provider === "claude") {
-    const result = spawnSync(process.env.BRIDGE_CSWAP_EXECUTABLE ?? "cswap", ["run", target.account, "--", "-p", PROMPT, "--model", "haiku", "--no-session-persistence"],
+    const result = spawnSync(cswapExecutable(), ["run", target.account, "--", "-p", PROMPT, "--model", "haiku", "--no-session-persistence"],
       { cwd: workDir(), env: cleanEnv(), encoding: "utf8", timeout: 180_000, stdio: ["ignore", "pipe", "pipe"] });
     if (result.status !== 0) throw new Error((result.stderr || result.stdout || "claude did not answer").trim().split("\n").at(-1));
     return "haiku";

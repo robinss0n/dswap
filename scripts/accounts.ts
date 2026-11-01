@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { listAccounts } from "../src/upstream/cswap.js";
+import { cswapExecutable, ensureCswap, installCswap } from "../src/upstream/cswap-runtime.js";
 import { windowIdle } from "../src/upstream/prime.js";
 import { cachedProbe } from "../src/upstream/probe-cache.js";
 import { codexAccountsDir, listCodexAccounts, probeCodexAccount, validCodexAccount, DEFAULT_CODEX_ACCOUNT, type CodexAccountStatus } from "../src/upstream/codex-accounts.js";
@@ -76,7 +77,7 @@ export function claudeAccounts(accounts: ReturnType<typeof listAccounts>, now = 
       email: account.email ?? "", plan: account.organizationName ?? "",
       ...(typeof five?.pct === "number" ? { fiveHour: five.pct } : {}), ...(typeof week?.pct === "number" ? { weekly: week.pct } : {}),
       ...(resets ? { resets } : {}), ...(fiveHourResets ? { fiveHourResets } : {}), ...(fiveHourIdle ? { fiveHourIdle } : {}), ...(weeklyResets ? { weeklyResets } : {}), status,
-      ...(account.usageStatus === "relogin_required" ? { detail: "login expired: log in again, then cswap stores it" } : {}),
+      ...(account.usageStatus === "relogin_required" ? { detail: "login expired: log in again to renew it" } : {}),
       active: account.active === true, disabled: account.disabled === true,
     } satisfies Account;
   });
@@ -135,7 +136,7 @@ export function renderTable(rows: AccountRow[]): string {
 
 export function loadClaude(): Account[] {
   try { return claudeAccounts(listAccounts()); }
-  catch { return [{ provider: "claude", selector: "-", label: "-", email: "", plan: "", status: "cswap unavailable" }]; }
+  catch { return [{ provider: "claude", selector: "-", label: "-", email: "", plan: "", status: "accounts unavailable" }]; }
 }
 
 /** Codex and Google checks go through the shared cache: `ttlMs` is how old a result from another dswap may be. */
@@ -191,7 +192,7 @@ export function removeCodex(name: string): number {
   return 0;
 }
 
-const cswapCommand = () => process.env.BRIDGE_CSWAP_EXECUTABLE ?? "cswap";
+const cswapCommand = () => cswapExecutable();
 
 /**
  * Runs a quick cswap command. `capture` keeps the output off the terminal (the dashboard
@@ -209,12 +210,12 @@ export function cswap(args: string[], capture = false): string {
   return lines.at(-1) ?? "";
 }
 
-/** cswap stores Claude accounts: log in with Claude Code, then let cswap add or renew that account. */
+/** Log in with Claude Code, then store (or renew) that account in dswap's account store. */
 export function loginClaude(): number {
   process.stderr.write("Step 1/2: log in with Claude Code. Pick the account you want to add or renew.\n");
-  if (!run(process.env.BRIDGE_CLAUDE_EXECUTABLE ?? "claude", ["auth", "login"])) throw new Error("claude auth login did not finish; cswap was not changed.");
-  process.stderr.write("Step 2/2: storing it in cswap.\n");
-  if (!run(cswapCommand(), ["add"])) throw new Error("cswap add failed.");
+  if (!run(process.env.BRIDGE_CLAUDE_EXECUTABLE ?? "claude", ["auth", "login"])) throw new Error("claude auth login did not finish; nothing was changed.");
+  process.stderr.write("Step 2/2: saving the account in dswap.\n");
+  if (!run(cswapCommand(), ["add"])) throw new Error("Saving the account failed.");
   return 0;
 }
 
@@ -264,25 +265,25 @@ export function auto(action?: string): number {
   if (process.platform !== "linux") throw new Error("dswap auto uses a systemd user service and needs Linux.");
   const unit = autoUnitPath();
   if (action === "on") {
-    const found = spawnSync("sh", ["-c", "command -v cswap"], { encoding: "utf8" });
-    const cswap = found.stdout.trim();
-    if (found.status !== 0 || !cswap) throw new Error("cswap is not on PATH.");
+    ensureCswap();
+    const cswap = cswapExecutable();
+    if (cswap === "cswap" && spawnSync("sh", ["-c", "command -v cswap"], { stdio: "ignore" }).status !== 0) throw new Error("dswap could not set up its account engine. Run: dswap runtime claude");
     mkdirSync(join(homedir(), ".config/systemd/user"), { recursive: true });
     writeFileSync(unit, cswapAutoUnit(cswap, process.env.PATH ?? "/usr/bin:/bin"), { mode: 0o644 });
     if (systemctl(["daemon-reload"]) !== 0 || systemctl(["enable", "--now", AUTO_UNIT]) !== 0) throw new Error("systemctl could not start cswap auto.");
-    process.stderr.write("cswap auto is on: the default Claude login moves to the account with the most room at 90% use. Logs: journalctl --user -u cswap-auto\n");
+    process.stderr.write("dswap auto is on: the default Claude login moves to the account with the most room at 90% use. Logs: journalctl --user -u cswap-auto\n");
     return 0;
   }
   if (action === "off") {
     systemctl(["disable", "--now", AUTO_UNIT], true);
     rmSync(unit, { force: true });
     systemctl(["daemon-reload"], true);
-    process.stderr.write("cswap auto is off.\n");
+    process.stderr.write("dswap auto is off.\n");
     return 0;
   }
   if (action === undefined || action === "status") {
     const state = autoState();
-    process.stdout.write(`cswap auto: ${state === "installed" ? "installed but not running" : state}\n`);
+    process.stdout.write(`dswap auto: ${state === "installed" ? "installed but not running" : state}\n`);
     if (state === "on") spawnSync("journalctl", ["--user", "-u", AUTO_UNIT, "-n", "5", "--no-pager", "-o", "cat"], { stdio: "inherit" });
     return 0;
   }
@@ -297,7 +298,7 @@ export const USAGE = [
   "       dswap disable <num|email>      keep a Claude account out of rotation",
   "       dswap enable <num|email>       put it back",
   "       dswap alias <num|email> <name> short name for a Claude account (--unset to remove)",
-  "       dswap login claude             add a Claude account or renew a dead one (claude auth login + cswap add)",
+  "       dswap login claude             add a Claude account or renew a dead one (claude auth login, then saves it in dswap)",
   "       dswap remove claude <num|email>",
   "       dswap add codex <name>         new Codex account (runs codex login)",
   "       dswap login codex [name]       log a Codex account in again (default: your ~/.codex)",
@@ -307,7 +308,8 @@ export const USAGE = [
   "       dswap remove google <name>",
   "       dswap rename google <old> <new>",
   "       dswap runtime google           install or update Google's Antigravity agent",
-  "       dswap auto on|off|status       keep cswap auto running in the background (switches before a limit, same session)",
+  "       dswap runtime claude           reinstall dswap's own copy of the Claude account engine",
+  "       dswap auto on|off|status       keep auto-switching running in the background (switches before a limit, same session)",
   "       dswap prime [on|off|status]    start each account's 5-hour window as soon as the last one ends (dswap prime help)",
   "       dswap intro [once|always|off]  logo animation on start, like Droid's setting (default once: next start only)",
   "",
@@ -318,6 +320,7 @@ class UsageError extends Error {}
 
 export async function accounts(argv: string[], interactive = false): Promise<number> {
   const [action, ...rest] = argv;
+  if (action !== "help" && action !== "--help" && action !== "-h" && action !== "demo" && action !== "runtime") ensureCswap();
   if ((!action && interactive) || action === "tui" || action === "ui" || action === "demo") {
     const { dashboard } = await import("./dswap-tui.js");
     const code = await dashboard({ demo: action === "demo" });
@@ -326,6 +329,7 @@ export async function accounts(argv: string[], interactive = false): Promise<num
   }
   if (!action || action === "--json" || action === "list" || action === "ls") { await overview(action === "--json" || rest.includes("--json")); return 0; }
   if (action === "help" || action === "--help" || action === "-h") { process.stdout.write(`${USAGE}\n`); return 0; }
+  if (action === "runtime" && rest[0] === "claude") { installCswap(); return 0; }
   if (action === "auto") return auto(rest[0]);
   if (action === "prime") { const { prime } = await import("./prime.js"); return prime(rest); }
   if (action === "intro") {

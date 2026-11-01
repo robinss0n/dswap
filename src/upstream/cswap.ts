@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { BridgeError } from "../types.js";
+import { cswapExecutable } from "./cswap-runtime.js";
 
 /**
  * Multi-account routing through claude-swap (`cswap`). cswap owns every stored
@@ -45,7 +46,7 @@ export function pickAccount(accounts: CswapAccount[], exclude: ReadonlySet<strin
   return usable[0] ? String(usable[0].number) : undefined;
 }
 
-export function listAccounts(command = process.env.BRIDGE_CSWAP_EXECUTABLE ?? "cswap"): CswapAccount[] {
+export function listAccounts(command = cswapExecutable()): CswapAccount[] {
   let output: string;
   try {
     output = execFileSync(command, ["list", "--json"], { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "ignore"] });

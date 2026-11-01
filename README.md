@@ -29,7 +29,7 @@ npm run accounts -- list           # plain table; --json for scripts
 npm run accounts -- help           # every command
 ```
 
-- **Claude:** accounts are stored by [cswap](https://github.com/realiti4/claude-swap), which must be on your `PATH`. `dswap auto on` keeps `cswap auto` running as a systemd user service, so the default login moves to the account with the most room before one hits its limit.
+- **Claude:** accounts are stored with [claude-swap](https://github.com/realiti4/claude-swap). dswap installs its own pinned copy on first use (needs `uv`, which fetches Python 3.12), so upgrading or removing a `cswap` on your `PATH` cannot break it; `dswap runtime claude` reinstalls it. `dswap auto on` keeps auto-switching running as a systemd user service, so the default login moves to the account with the most room before one hits its limit.
 - **Codex:** `dswap add codex <name>` runs `codex login` into a separate `CODEX_HOME` per account. The bridge picks the account with the most room.
 - **Google:** `dswap add google <name>` signs a Google AI Pro/Ultra (or free) account in through Google's own Antigravity agent, one folder per account. `dswap runtime google` installs or updates the agent.
 

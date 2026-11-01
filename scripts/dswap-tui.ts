@@ -425,7 +425,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
     mode = { kind: "choice", label: `${label}  ${bold(c.sky("y"))} ${c.muted("yes · any other key: no")}`, choices: { y: demo ? () => say("demo: nothing was removed") : yes } };
   }
 
-  const loginClaudeNow = () => suspended("dswap login claude", () => { loginClaude(); }, "Claude login stored in cswap.");
+  const loginClaudeNow = () => suspended("dswap login claude", () => { loginClaude(); }, "Claude login saved.");
   const removeClaudeNow = (account: Account) => confirm(`Remove claude ${account.label}${account.email ? ` (${account.email})` : ""}?`,
     () => suspended(`dswap remove claude ${account.selector}`, () => { cswap(["remove", account.selector]); }, `Removed claude ${account.label}.`));
   const removeGoogleNow = (name: string) => confirm(`Remove Google account ${name} and its sign-in?`, async () => {
@@ -498,7 +498,7 @@ export async function dashboard(options: { demo?: boolean } = {}): Promise<numbe
             : say("No name given; nothing added.") }; },
         } }; } },
       ...(autoNow === "unsupported" ? [] : [{ keys: ["t"], hint: "t", label: autoOn ? "cswap auto off" : "cswap auto on", cli: `dswap auto ${autoOn ? "off" : "on"}`,
-        run: () => suspended(`dswap auto ${autoOn ? "off" : "on"}`, () => { auto(autoOn ? "off" : "on"); }, `cswap auto is ${autoOn ? "off" : "on"}.`) }]),
+        run: () => suspended(`dswap auto ${autoOn ? "off" : "on"}`, () => { auto(autoOn ? "off" : "on"); }, `dswap auto is ${autoOn ? "off" : "on"}.`) }]),
       ...(primeNow === "unsupported" ? [] : [{ keys: ["p"], hint: "p", label: primeNow === "on" ? "priming off" : "priming on", cli: `dswap prime ${primeNow === "on" ? "off" : "on"}`,
         run: () => suspended(`dswap prime ${primeNow === "on" ? "off" : "on"}`, () => runCli(["prime", primeNow === "on" ? "off" : "on"]), `Priming is ${primeNow === "on" ? "off" : "on"}.`) }]),
       ...(serverHost ? [serverAction(serverHost)] : []),
