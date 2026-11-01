@@ -560,12 +560,21 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
         compactMetadata: turn.compactMetadata,
         // Handoff and Task batch events carry only IDs and tool names: how pending tools finished and which calls went to Droid together.
         events: (turn.events ?? []).filter((event) => /usage|compact|cancelled_turn|steering_turn|task_batch/i.test(event.type)),
+        // The block shape Droid was sent, without message text: shows whether a block was lost before or after the bridge.
+        sent: assistantContent.map((block) => block.type === "text" ? { type: "text", chars: typeof block.text === "string" ? block.text.length : 0 }
+          : block.type === "tool_use" ? { type: "tool_use", name: (block as { name?: string }).name, id: (block as { id?: string }).id } : { type: block.type }),
       })));
       completed = true;
       if (writer) writer.finish(turn.response);
       else json(res, 200, turn.response);
     } catch (error) {
       completed = true;
+      logger.warn("request_failed", {
+        sessionId, model: request.model,
+        status: error instanceof BridgeError ? error.status : 500,
+        code: error instanceof BridgeError ? error.code : "internal_error",
+        message: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+      });
       const current = store.get(sessionId);
       const recoverableSwitch = error instanceof BridgeError && error.status === 409
         && ["model_switch_busy", "model_switch_requires_persistence", "model_switch_unavailable", "reasoning_switch_busy", "reasoning_switch_requires_persistence", "reasoning_switch_unavailable"].includes(error.code);

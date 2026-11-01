@@ -70,7 +70,7 @@ const script = String.raw`
     const card = element('article', undefined, 'card');
     card.append(element('h3', item.toolName));
     card.append(element('p', '会话：' + item.bridgeSessionId, 'identifier'));
-    if (item.sdkSessionId) card.append(element('p', 'Claude Code：' + item.sdkSessionId, 'identifier'));
+    if (item.sdkSessionId) card.append(element('p', '原生会话：' + item.sdkSessionId, 'identifier'));
     card.append(element('p', '请求：' + item.id, 'identifier'));
     card.append(element('p', '到期：' + date(item.expiresAt), 'muted'));
     card.append(element('pre', JSON.stringify(item.input, null, 2)));
@@ -133,7 +133,7 @@ const script = String.raw`
     const card = element('article', undefined, 'card compact');
     card.append(element('h3', item.role + ' · ' + item.state));
     card.append(element('p', item.bridgeSessionId, 'identifier'));
-    if (item.sdkSessionId) card.append(element('p', 'Claude Code：' + item.sdkSessionId, 'identifier'));
+    if (item.sdkSessionId) card.append(element('p', '原生会话：' + item.sdkSessionId, 'identifier'));
     if (!['CANCELLED', 'FAILED', 'CLOSED', 'COMPLETED'].includes(item.state)) {
       const cancel = element('button', '取消会话', 'secondary');
       cancel.type = 'button';

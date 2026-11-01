@@ -1,8 +1,10 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CodexAppServer } from "../runtime/codex/app-server.js";
 import { BridgeError } from "../types.js";
+import { providerCliEnv } from "./auth-env.js";
+import { cachedProbe } from "./probe-cache.js";
 
 /**
  * Codex accounts: each one is its own CODEX_HOME with its own `codex login`.
@@ -61,7 +63,7 @@ function window(value: any): UsageWindow | undefined {
 }
 
 /** Ask one account's own Codex who is logged in and what its limits are. Sends no prompt. */
-export async function probeCodexAccount(account: CodexAccountRef, open: (home: string) => CodexAppServer = (home) => new CodexAppServer({ codexHome: home })): Promise<CodexAccountStatus> {
+export async function probeCodexAccount(account: CodexAccountRef, open: (home: string) => CodexAppServer = (home) => new CodexAppServer({ codexHome: home, env: providerCliEnv(process.env) })): Promise<CodexAccountStatus> {
   const server = open(account.home);
   try {
     await server.initialize();
@@ -78,6 +80,25 @@ export async function probeCodexAccount(account: CodexAccountRef, open: (home: s
   } finally {
     server.close();
   }
+}
+
+/** probeCodexAccount through the shared cache: `auto` would otherwise start one app-server per account for every new session. */
+export function cachedCodexAccountStatus(account: CodexAccountRef, ttlMs = 60_000): Promise<CodexAccountStatus> {
+  return cachedProbe(`codex-${account.name}`, () => probeCodexAccount(account), { ttlMs, keep: (status) => status.status !== "error" });
+}
+
+/**
+ * Names of the MCP servers in an account's config.toml (`[mcp_servers.<name>]` tables).
+ * Reads table headers only; config.toml holds no login.
+ */
+export function codexMcpServerNames(home: string): string[] {
+  let text: string;
+  try { text = readFileSync(join(home, "config.toml"), "utf8"); } catch { return []; }
+  const names = new Set<string>();
+  for (const match of text.matchAll(/^\s*\[\s*mcp_servers\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*[\].]/gm)) {
+    names.add(match[1] ?? match[2] ?? match[3]!);
+  }
+  return [...names];
 }
 
 /** Highest usage across both windows; accounts without numbers sort last. */

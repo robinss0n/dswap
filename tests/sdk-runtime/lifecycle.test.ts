@@ -1670,7 +1670,7 @@ describe("Task calls of one assistant message reach Droid together", () => {
    * Like Claude Code: each block arrives as it streams, the first tool starts while
    * the message is still streaming, and its later tools run one after another.
    */
-  function claudeCode(uses: Use[], seen: { results: Record<string, unknown>; guards: Record<string, unknown> }) {
+  function claudeCode(uses: Use[], seen: { results: Record<string, unknown>; guards: Record<string, unknown> }, preamble?: string) {
     return new FakeSdk(async function* (_input, index, fake) {
       if (index > 0) return;
       const guard = (fake.calls[0]!.options.hooks as { PreToolUse: Array<{ hooks: Guard[] }> }).PreToolUse[0]!.hooks[0]!;
@@ -1680,9 +1680,15 @@ describe("Task calls of one assistant message reach Droid together", () => {
         seen.results[use.id] = await fake.handlers.get(bare)!(use.input, { toolUseID: use.id });
       };
       yield stream({ type: "message_start", message: { id: "msg-batch" } });
+      const offset = preamble ? 1 : 0;
+      if (preamble) {
+        yield stream({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+        yield stream({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: preamble } });
+        yield { type: "assistant", message: { id: "msg-batch", content: [{ type: "text", text: preamble }] } };
+      }
       let first: Promise<void> | undefined;
       for (const [position, use] of uses.entries()) {
-        yield stream({ type: "content_block_start", index: position, content_block: { type: "tool_use", id: use.id, name: use.name, input: {} } });
+        yield stream({ type: "content_block_start", index: position + offset, content_block: { type: "tool_use", id: use.id, name: use.name, input: {} } });
         yield { type: "assistant", message: { id: "msg-batch", content: [{ type: "tool_use", ...use }] } };
         first ??= run(use);
       }
@@ -1717,6 +1723,15 @@ describe("Task calls of one assistant message reach Droid together", () => {
       expect(seen.results[id]).toMatchObject({ isError: false, content: [{ type: "text", text: `result of ${id}` }] });
     }
     expect(done.pendingToolIds).toEqual([]);
+  });
+
+  it("keeps the text written before a batch of Task calls", async () => {
+    const seen = { results: {} as Record<string, unknown>, guards: {} as Record<string, unknown> };
+    const uses = ["task-a", "task-b", "task-c"].map((id) => taskUse(id));
+    const { runtime } = create(claudeCode(uses, seen, "Here is the answer. Starting three reviews."), { toolWaitMs: 5_000, requestTimeoutMs: 5_000 });
+    const first = await runtime.handle(request(session(), "answer, then start three", { tools: [task] }));
+    expect(first.response.content[0]).toEqual({ type: "text", text: "Here is the answer. Starting three reviews." });
+    expect(toolUseIds(first.response.content)).toEqual(["task-a", "task-b", "task-c"]);
   });
 
   it("asks Droid for all of the batch's results together", async () => {

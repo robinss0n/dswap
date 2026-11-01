@@ -199,6 +199,19 @@ function inheritEnv(sourceEnv: NodeJS.ProcessEnv, bridgeListen: string): Record<
   return env;
 }
 
+/**
+ * The environment for a provider CLI that keeps its own login on disk (Codex): system and
+ * proxy settings only, so bridge tokens and other providers' API keys never reach it.
+ */
+export function providerCliEnv(sourceEnv: NodeJS.ProcessEnv): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(sourceEnv)) {
+    if (value === undefined) continue;
+    if (BASE_NAMES.has(key) || key.startsWith("LC_") || key.startsWith("XDG_")) env[key] = value;
+  }
+  return env;
+}
+
 function baseEnv(sourceEnv: NodeJS.ProcessEnv): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(sourceEnv)) {

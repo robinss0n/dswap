@@ -13,6 +13,7 @@ import { appendLogLine, type Logger } from "../logging.js";
 import { claudeToolTraceDetail, isDroidMcpName, selectDroidMcpTools } from "./droid-tools.js";
 import { DroidMcpCatalog, StableDroidToolNames } from "./droid-mcp-catalog.js";
 import { hostAllowsAnyTools, nativeToolAllowed } from "./native-tool-policy.js";
+import { CANCELLED_TOOL_NOTE, CANCELLED_TURN_DENIAL, isUserCancellation as isCancellationResult } from "./cancellation.js";
 import { buildDroidSystemPrompt, buildDynamicUserContent, buildHostContext, buildInitialUserContent, buildPresetSystemPrompt, describePromptLayout, trailingUserMessages } from "./system-prompt.js";
 import { UsageLedger } from "./usage.js";
 import { INTERRUPT_GRACE_MS, TurnWatchdog } from "./turn-watchdog.js";
@@ -190,18 +191,6 @@ const BACKSTOP_SLACK_MS = INTERRUPT_GRACE_MS + 1_000;
 type DroidResult = { tool_use_id: string; content: string | ContentBlock[]; is_error?: boolean };
 type TurnHandoff = { reason: "cancelled" | "steering"; followup: ContentBlock[] };
 
-/**
- * Droid's whole result when the user picks "No, cancel" (each locale of its
- * common:toolExecution.cancelledByUser) or interrupts a tool. Droid sends it as
- * "Error: <text>" and then ends its own turn without another request.
- */
-const USER_CANCELLATIONS = new Set([
-  "Tool execution cancelled by user", "工具执行已被用户取消", "ツール実行がユーザーによりキャンセルされました",
-  "사용자가 도구 실행을 취소했습니다", "Esecuzione dello strumento annullata dall'utente",
-  "Tool execution was interrupted", "Request interrupted by user",
-]);
-const CANCELLED_TOOL_NOTE = "The user cancelled or interrupted this tool call in Droid. Preserve any work already done. Do not retry it or try another way. Acknowledge the cancellation in one short sentence, then end your turn.";
-const CANCELLED_TURN_DENIAL = "BRIDGE_USER_CANCELLED: The user cancelled the previous tool call in Droid. Do not retry it or use any other tool now; acknowledge the cancellation and end your turn.";
 const STEERING_TOOL_NOTE = "A new user message is queued. This is the completed tool's actual result. Preserve work already done, finish the current response without starting another tool, then read the new user message and continue any unfinished task.";
 const STEERING_TURN_DENIAL = "BRIDGE_USER_TURN_PENDING: A new user message is queued. Finish the current response without using another tool, then read the new user turn and continue the task.";
 /**
@@ -1559,11 +1548,7 @@ function latestToolResults(input: RuntimeRequest, includeTrailingUserMessages = 
 }
 
 function isUserCancellation(result: DroidResult): boolean {
-  if (!result.is_error) return false;
-  const text = typeof result.content === "string" ? result.content
-    : result.content.map((block) => block.type === "text" && typeof block.text === "string" ? block.text : "\u0000").join("");
-  // Droid's session file stores the bare text; only its API request adds the prefix.
-  return USER_CANCELLATIONS.has(text.trim().replace(/^Error:\s*/, ""));
+  return isCancellationResult(result.content, result.is_error);
 }
 
 function hasNewUserContent(input: RuntimeRequest): boolean {

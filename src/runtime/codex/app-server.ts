@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 
 /**
  * Minimal JSON-RPC client for `codex app-server` (newline-delimited JSON over
@@ -25,6 +26,7 @@ export interface AppServerOptions {
   configOverrides?: string[];
   onRequest?: ServerRequestHandler;
   onNotification?: NotificationHandler;
+  onStderr?: (line: string) => void;
   /** Injected for tests; production spawns `codex app-server`. */
   spawnProcess?: (command: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string }) => ChildProcess;
 }
@@ -34,15 +36,31 @@ export class CodexAppServer {
   private nextId = 0;
   private readonly waiting = new Map<number, { method: string; resolve: (value: any) => void; reject: (error: Error) => void }>();
   private exitError?: Error;
+  private stderr = Buffer.alloc(0);
   readonly exited: Promise<void>;
 
   constructor(private readonly options: AppServerOptions = {}) {
     const env = { ...(options.env ?? process.env), ...(options.codexHome ? { CODEX_HOME: options.codexHome } : {}) };
     const command = options.executable ?? process.env.BRIDGE_CODEX_EXECUTABLE ?? "codex";
-    this.child = (options.spawnProcess ?? ((cmd, args, opts) => spawn(cmd, args, { ...opts, stdio: ["pipe", "pipe", "ignore"] })))(command, [...(options.configOverrides ?? []).flatMap((item) => ["-c", item]), "app-server"], { env, cwd: options.cwd });
+    this.child = (options.spawnProcess ?? ((cmd, args, opts) => spawn(cmd, args, { ...opts, stdio: ["pipe", "pipe", "pipe"] })))(command, [...(options.configOverrides ?? []).flatMap((item) => ["-c", item]), "app-server"], { env, cwd: options.cwd });
+    let pendingLine = "";
+    const decoder = new StringDecoder("utf8");
+    this.child.stderr?.on("data", (chunk: Buffer | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      this.stderr = Buffer.from(Buffer.concat([this.stderr, bytes]).subarray(-8192));
+      if (!options.onStderr) return;
+      const lines = (pendingLine + decoder.write(bytes)).split("\n");
+      pendingLine = lines.pop()!.slice(-8192);
+      for (const line of lines) options.onStderr(line.replace(/\r$/, ""));
+    });
+    this.child.stderr?.once("end", () => {
+      pendingLine += decoder.end();
+      if (pendingLine) options.onStderr?.(pendingLine);
+    });
     this.exited = new Promise((resolve) => {
-      this.child.once("exit", (code, signal) => { this.fail(new Error(`codex app-server exited (${signal ?? code})`)); resolve(); });
-      this.child.once("error", (error) => { this.fail(error); resolve(); });
+      // close follows stderr EOF, so even the last diagnostic is included.
+      this.child.once("close", (code, signal) => { this.fail(this.withStderr(new Error(`codex app-server exited (${signal ?? code})`))); resolve(); });
+      this.child.once("error", (error) => { this.fail(this.withStderr(error)); resolve(); });
     });
     createInterface({ input: this.child.stdout! }).on("line", (line) => {
       if (!line.trim()) return;
@@ -79,6 +97,13 @@ export class CodexAppServer {
   }
 
   get pid(): number | undefined { return this.child.pid; }
+
+  stderrTail(): string { return this.stderr.toString("utf8"); }
+
+  private withStderr(error: Error): Error {
+    const tail = this.stderrTail();
+    return tail ? new Error(`${error.message}\nstderr:\n${tail}`, { cause: error }) : error;
+  }
 
   private write(message: RpcMessage): void {
     this.child.stdin?.write(`${JSON.stringify(message)}\n`);
