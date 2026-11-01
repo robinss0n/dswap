@@ -2,7 +2,7 @@ import { DESKTOP_DISALLOWED_TOOLS, DESKTOP_APPROVAL_DENIAL, DESKTOP_READ_DENIAL 
 import { mkdirSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, join } from "node:path";
-import { resolveRequestCwd } from "../workspace.js";
+import { processCwd, resolveRequestCwd } from "../workspace.js";
 import { asBlocks, collectToolResults } from "../protocol/content.js";
 import { assistantMessage } from "../protocol/messages.js";
 import { ToolMailbox } from "../relay/mailbox.js";
@@ -948,14 +948,14 @@ export class SdkRuntime implements BridgeRuntime {
       },
       // Droid mode: no native tools, so Droid runs (and approves) every Read, Edit and Execute itself.
       tools: this.config.promptMode === "droid" ? [] : { type: "preset", preset: "claude_code" }, includePartialMessages: true,
-      cwd: resolveCwd(input, this.config), persistSession: this.config.persistSessions,
+      cwd: processCwd(resolveCwd(input, this.config), this.config), persistSession: this.config.persistSessions,
       ...(this.config.maxTurns > 0 ? { maxTurns: this.config.maxTurns } : {}), mcpServers: { droid: server },
       // Permit the dynamic host namespace only. Droid executes these operations
       // with its own permissions; native Claude Code builtins are not covered.
       allowedTools: ["mcp__droid__*"],
       env, permissionMode: this.config.desktopProfile || this.config.permissionMode === "ask" ? "default" : "bypassPermissions",
       allowDangerouslySkipPermissions: !this.config.desktopProfile && this.config.permissionMode !== "ask", abortController: abort,
-      systemPrompt: this.config.promptMode === "droid" ? buildDroidSystemPrompt(input) : buildPresetSystemPrompt(this.config.desktopProfile),
+      systemPrompt: this.config.promptMode === "droid" ? buildDroidSystemPrompt(input, this.config.remoteWorkspace) : buildPresetSystemPrompt(this.config.desktopProfile),
       canUseTool: async (name: string, toolInput: Record<string, unknown>, context?: NativePermissionContext) => live.queryEpoch === epoch
         ? this.canUseTool(live, name, toolInput, context)
         : { behavior: "deny", message: "This native query has been retired." },

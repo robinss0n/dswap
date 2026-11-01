@@ -7,7 +7,7 @@ import { canonicalToolUseId, collectToolResults, systemText, textFromBlocks } fr
 import { googleFromModelId } from "../../models.js";
 import { historyMessageHashes } from "../../sessions/correlate.js";
 import { BridgeError, type ContentBlock, type Json, type Usage } from "../../types.js";
-import { resolveRequestCwd } from "../../workspace.js";
+import { processCwd, resolveRequestCwd } from "../../workspace.js";
 import { AUTO_ACCOUNT } from "../../upstream/cswap.js";
 import { droidAntigravity, REPLACE_MARKER, type AntigravityExecutable } from "../../upstream/antigravity-patch.js";
 import { antigravityExecutable, GOOGLE_AUTH_METHOD, googleAccountHome, initializeAgent, listGoogleAccounts, openAgent, pickGoogleAccount, probeGoogleAccount } from "../../upstream/google-accounts.js";
@@ -284,7 +284,7 @@ export class AntigravityRuntime implements BridgeRuntime {
   /** Start the agent and its session, up to session/new. */
   private async startAgent(live: LiveGoogle, input: RuntimeRequest, account: string, build: AntigravityExecutable): Promise<void> {
     const home = (this.deps.accountHome ?? googleAccountHome)(account);
-    const cwd = resolveRequestCwd(input.headers, input.request, this.config);
+    const cwd = processCwd(resolveRequestCwd(input.headers, input.request, this.config), this.config);
     const handlers = {
       onNotification: (method: string, params: any) => this.notification(live, method, params),
       onRequest: (method: string, params: any) => this.agentRequest(method, params),

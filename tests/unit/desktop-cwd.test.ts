@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { droidWorkingDirectory, resolveRequestCwd } from "../../src/workspace.js";
+import { droidWorkingDirectory, processCwd, resolveRequestCwd } from "../../src/workspace.js";
 import { sessionContextHash } from "../../src/sessions/correlate.js";
 import type { MessagesRequest } from "../../src/types.js";
 
@@ -98,4 +98,15 @@ it("runs tool-free requests such as Droid compaction summaries in an empty Bridg
   // A request that may use tools still needs Droid's project reminder.
   expect(() => resolveRequestCwd({}, { ...summary, tools: [{ name: "Execute", input_schema: { type: "object" as const } }] }, config, {}))
     .toThrow("Open a project folder in Droid");
+});
+it("uses a remote Droid's folder as identity only and starts processes in an empty local folder", () => {
+  const { config } = fixture(); const remote = { ...config, remoteWorkspace: true };
+  const laptop = "/home/someone/code/laptop-only-project";
+  const cwd = resolveRequestCwd({ "x-bridge-cwd": "/etc" }, request([reminder(laptop)]), remote, {});
+  expect(cwd).toBe(laptop);
+  const started = processCwd(cwd, remote);
+  expect(started).toBe(realpathSync(join(config.dataDir, "remote-cwd")));
+  expect(readdirSync(started)).toEqual([]);
+  expect(processCwd(cwd, config)).toBe(cwd);
+  for (const path of ["/", "relative", ""]) expect(() => resolveRequestCwd({}, request([reminder(path)]), remote, {})).toThrow("Open a project folder");
 });

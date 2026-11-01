@@ -24,10 +24,13 @@ export const STABLE_DROID_APPEND = [
 export const DROID_TOOL_NAME_NOTE = "Tool names: every tool named in these instructions is available with the mcp__droid__ prefix, for example Read is mcp__droid__Read and Execute is mcp__droid__Execute.";
 
 /** BRIDGE_PROMPT=droid: Droid's own system prompt replaces Claude Code's preset. */
-export function buildDroidSystemPrompt(input: RuntimeRequest): string {
+/** Claude Code appends its own environment section, naming the folder its process started in. */
+export const REMOTE_WORKSPACE_NOTE = "Droid and its tools run on another machine. The project is the folder in Droid's environment reminder; the primary working directory in the environment section below is an empty placeholder on the model server, so never use or mention it.";
+
+export function buildDroidSystemPrompt(input: RuntimeRequest, remoteWorkspace = false): string {
   const host = systemText(input.request.system).trim();
   if (!host) throw new BridgeError(400, "missing_host_system_prompt", "BRIDGE_PROMPT=droid needs Droid's system prompt in the request.");
-  return `${host}\n\n${DROID_TOOL_NAME_NOTE}`;
+  return `${host}\n\n${DROID_TOOL_NAME_NOTE}${remoteWorkspace ? `\n\n${REMOTE_WORKSPACE_NOTE}` : ""}`;
 }
 
 export interface PresetSystemPrompt {

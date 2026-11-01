@@ -8,7 +8,7 @@ import { canonicalToolUseId, collectToolResults, systemText, textFromBlocks } fr
 import { codexFromModelId } from "../../models.js";
 import { historyMessageHashes } from "../../sessions/correlate.js";
 import { BridgeError, type ContentBlock, type Json, type MessagesRequest, type ToolDefinition, type Usage } from "../../types.js";
-import { resolveRequestCwd } from "../../workspace.js";
+import { processCwd, resolveRequestCwd } from "../../workspace.js";
 import { AUTO_ACCOUNT } from "../../upstream/cswap.js";
 import { providerCliEnv } from "../../upstream/auth-env.js";
 import { cachedCodexAccountStatus, codexAccountHome, codexMcpServerNames, listCodexAccounts, pickCodexAccount } from "../../upstream/codex-accounts.js";
@@ -424,7 +424,7 @@ export class CodexRuntime implements BridgeRuntime {
     if (live.server && live.threadId) return;
     const account = await this.resolveAccount(route.account);
     const home = codexAccountHome(account);
-    const cwd = resolveRequestCwd(input.headers, input.request, this.config);
+    const cwd = processCwd(resolveRequestCwd(input.headers, input.request, this.config), this.config);
     const catalog = droidCodexCatalog(home, this.config.dataDir, account);
     if (!catalog) {
       this.deps.alerts?.alert(`codex-catalog-${account}`, "dswap: Codex fallback",

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { droidActivityMarkTime } from "../activity.js";
 
 /**
  * Window priming: a 5-hour limit window starts with an account's first message, so a tiny ping
@@ -167,12 +168,14 @@ export function primeLogLines(text: string, lines = 40, date = new Date()): stri
 
 /**
  * Last time Droid was used: the newest change among Droid's session files (only their times are
- * read, never their contents). Undefined when there is no Droid on this machine.
+ * read, never their contents), or the bridge's mark for a Droid on another machine.
+ * Undefined when neither exists.
  */
 export function lastDroidActivity(env: NodeJS.ProcessEnv = process.env): number | undefined {
   const root = env.DSWAP_ACTIVITY_DIR ?? join(env.HOME ?? homedir(), ".factory/sessions");
-  if (!existsSync(root)) return undefined;
-  let newest = 0;
+  const marked = droidActivityMarkTime(env) ?? 0;
+  if (!existsSync(root)) return marked || undefined;
+  let newest = marked;
   const visit = (dir: string, depth: number) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);

@@ -47,7 +47,15 @@ export function droidWorkingDirectory(request: MessagesRequest): string | undefi
 }
 
 type RequestHeaders = Record<string, string | string[] | undefined>;
-type WorkspaceConfig = Pick<BridgeConfig, "sdkCwd" | "desktopProfile" | "dataDir">;
+type WorkspaceConfig = Pick<BridgeConfig, "sdkCwd" | "desktopProfile" | "dataDir" | "remoteWorkspace">;
+
+/** Where provider processes start: the project, or with a remote workspace an empty folder here. */
+export function processCwd(cwd: string, config: Pick<BridgeConfig, "dataDir" | "remoteWorkspace">): string {
+  if (!config.remoteWorkspace) return cwd;
+  const dir = join(config.dataDir, "remote-cwd");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return realpathSync(dir);
+}
 export function resolveRequestCwd(headers: RequestHeaders, request: MessagesRequest, config: WorkspaceConfig, source?: NodeJS.ProcessEnv): string;
 export function resolveRequestCwd(headers: RequestHeaders, request: MessagesRequest): string | undefined;
 export function resolveRequestCwd(
@@ -69,6 +77,12 @@ export function resolveRequestCwd(
   const invalid = () => new BridgeError(400, "invalid_project_directory", "Open a project folder in Droid. Its initial environment reminder must contain a valid project working directory; root and Bridge state directories are refused.");
   const raw = droidWorkingDirectory(request);
   if (!raw || !isAbsolute(raw) || raw.includes("\0")) throw invalid();
+  // The folder is on Droid's machine; nothing here reads or writes it.
+  if (config.remoteWorkspace) {
+    const cwd = resolve(raw);
+    if (cwd === resolve(cwd, "..")) throw invalid();
+    return cwd;
+  }
   try {
     const cwd = realpathSync(raw), state = realpathSync(resolve(config.dataDir, ".."));
     const data = realpathSync(config.dataDir);

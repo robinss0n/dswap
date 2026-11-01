@@ -6,10 +6,17 @@ import { resolve } from "node:path";
 import type { BridgeMode } from "./types.js";
 import { parseAuthMode, type AuthMode } from "./upstream/auth-env.js";
 import { canonicalWorkspacePath } from "./workspace.js";
+import { routeModels } from "./routing.js";
 import { codexModels, googleModels, modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
 
 export interface BridgeConfig {
   desktopProfile?: boolean;
+  /**
+   * Droid and its project live on another machine (reached through a tunnel). Droid's
+   * folder is only identity and prompt text here; provider processes start in an empty
+   * folder. Needs the desktop profile and Droid's prompt, where no provider tool runs locally.
+   */
+  remoteWorkspace?: boolean;
   host: string;
   port: number;
   mode: BridgeMode;
@@ -203,8 +210,14 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     : "ask") as "bypass" | "ask";
 
   if (desktopProfile && (permissionMode !== "ask" || !isLoopbackHost(host))) throw new Error("Desktop profile requires ask permissions and loopback binding.");
+  const promptMode = overrides.promptMode ?? promptModeEnv();
+  const remoteWorkspace = overrides.remoteWorkspace ?? env("BRIDGE_REMOTE_WORKSPACE") === "1";
+  if (remoteWorkspace && (!desktopProfile || promptMode !== "droid" || env("BRIDGE_SDK_CWD"))) {
+    throw new Error("BRIDGE_REMOTE_WORKSPACE=1 requires BRIDGE_DESKTOP=1 and BRIDGE_PROMPT=droid, without BRIDGE_SDK_CWD.");
+  }
   const config: BridgeConfig = {
     desktopProfile,
+    remoteWorkspace,
     host,
     port: overrides.port ?? intEnv("BRIDGE_PORT", 18787),
     mode,
@@ -237,14 +250,15 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     logBodies: overrides.logBodies ?? env("BRIDGE_LOG_BODIES") === "1",
     authMode,
     permissionMode,
-    promptMode: overrides.promptMode ?? promptModeEnv(),
+    promptMode,
     upstreamBaseUrl: overrides.upstreamBaseUrl ?? env("BRIDGE_UPSTREAM_BASE_URL"),
     upstreamModel: overrides.upstreamModel ?? env("BRIDGE_UPSTREAM_MODEL"),
     upstreamTokenEnv: overrides.upstreamTokenEnv ?? env("BRIDGE_UPSTREAM_TOKEN_ENV"),
     models: overrides.models !== undefined ? validateModels(overrides.models)
       : mergeModelCatalog(
         withAccountsEnv(env("BRIDGE_MODELS") ? modelsFromIds(parseModelIds(env("BRIDGE_MODELS")!), authMode) : claudeConfig ? claudeConfigModels(claudeConfig).models : undefined),
-        [...(readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")) ?? []), ...codexMenuEnv(), ...googleMenuEnv()],
+        [...(readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")) ?? []), ...codexMenuEnv(), ...googleMenuEnv(),
+          ...(env("BRIDGE_ROUTE_MODELS") === "1" ? routeModels() : [])],
       ),
   };
   for (const [name, value, minimum] of [

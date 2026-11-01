@@ -8,6 +8,7 @@ import { listAccounts } from "../src/upstream/cswap.js";
 import { cswapExecutable, ensureCswap, installCswap } from "../src/upstream/cswap-runtime.js";
 import { windowIdle } from "../src/upstream/prime.js";
 import { cachedProbe } from "../src/upstream/probe-cache.js";
+import { chooseProvider, combinedLoad, ROUTE_CODEX_LIMIT, type CombinedLoad } from "../src/routing.js";
 import { codexAccountsDir, listCodexAccounts, probeCodexAccount, validCodexAccount, DEFAULT_CODEX_ACCOUNT, type CodexAccountStatus } from "../src/upstream/codex-accounts.js";
 import { listGoogleAccounts, probeGoogleAccount, type GoogleAccountStatus } from "../src/upstream/google-accounts.js";
 
@@ -150,10 +151,30 @@ export async function loadGoogle(ttlMs = 0): Promise<Account[]> {
     cachedProbe(`google-${account.name}`, () => probeGoogleAccount(account), { ttlMs, keep: (status) => status.status !== "error" }))));
 }
 
+/** Each provider's accounts as one pool, as the quota routing sees them. */
+export function poolLoads(accounts: Account[]): Partial<Record<Account["provider"], CombinedLoad>> {
+  const pools: Partial<Record<Account["provider"], CombinedLoad>> = {};
+  for (const provider of ["claude", "codex", "google"] as const) {
+    const usable = accounts.filter((account) => account.provider === provider && !account.disabled && ["ok", "limited"].includes(account.status));
+    const load = combinedLoad(usable.map((account) => ({ fiveHour: account.fiveHour, week: account.weekly })));
+    if (load) pools[provider] = load;
+  }
+  return pools;
+}
+
+export function poolSummary(accounts: Account[]): string {
+  const pools = poolLoads(accounts);
+  const lines = Object.entries(pools).map(([provider, load]) =>
+    `${provider} combined (${load.accounts}): 5h ${pct(load.fiveHour)} · week ${pct(load.week)}`);
+  const route = chooseProvider(pools.codex?.load, pools.claude?.load);
+  lines.push(`dswap tier models now go to ${route} (Codex first until ${ROUTE_CODEX_LIMIT}%, then the pool with more room; orchestrator stays on Opus)`);
+  return `${lines.join("\n")}\n`;
+}
+
 async function overview(json: boolean): Promise<void> {
   const [codex, google] = await Promise.all([loadCodex(), loadGoogle()]);
   const accounts = [...loadClaude(), ...codex, ...google];
-  process.stdout.write(json ? `${JSON.stringify(accounts.map((account) => ({ ...toRow(account), ...account })), null, 2)}\n` : renderTable(accounts.map(toRow)));
+  process.stdout.write(json ? `${JSON.stringify(accounts.map((account) => ({ ...toRow(account), ...account })), null, 2)}\n` : `${renderTable(accounts.map(toRow))}\n${poolSummary(accounts)}`);
 }
 
 export function addCodex(name: string): number {

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildDynamicUserPrompt, buildDynamicUserContent, buildHostContext, buildInitialUserContent, buildPresetSystemPrompt, STABLE_DROID_APPEND } from "../../src/runtime/system-prompt.js";
+import { buildDroidSystemPrompt, buildDynamicUserPrompt, REMOTE_WORKSPACE_NOTE, buildDynamicUserContent, buildHostContext, buildInitialUserContent, buildPresetSystemPrompt, STABLE_DROID_APPEND } from "../../src/runtime/system-prompt.js";
 import type { RuntimeRequest } from "../../src/runtime/types.js";
 
 function request(overrides: Partial<RuntimeRequest> = {}): RuntimeRequest {
@@ -257,4 +257,10 @@ describe("T3-style system prompt", () => {
     expect(STABLE_DROID_APPEND).toContain("mcp__droid__ToolSearch");
     expect(STABLE_DROID_APPEND).toContain("Native Claude Code skills and subagents remain separate");
   });
+});
+
+it("tells Claude the local working directory is a placeholder only for a remote workspace", () => {
+  const input = { request: { model: "sonnet", max_tokens: 1, system: "Droid prompt", messages: [{ role: "user", content: "hi" }] } } as unknown as RuntimeRequest;
+  expect(buildDroidSystemPrompt(input)).not.toContain(REMOTE_WORKSPACE_NOTE);
+  expect(buildDroidSystemPrompt(input, true)).toMatch(/^Droid prompt[\s\S]*empty placeholder/);
 });
