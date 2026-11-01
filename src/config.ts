@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import type { BridgeMode } from "./types.js";
 import { parseAuthMode, type AuthMode } from "./upstream/auth-env.js";
 import { canonicalWorkspacePath } from "./workspace.js";
+import { routeModels } from "./routing.js";
 import { codexModels, googleModels, modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
 
 export interface BridgeConfig {
@@ -256,7 +257,8 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     models: overrides.models !== undefined ? validateModels(overrides.models)
       : mergeModelCatalog(
         withAccountsEnv(env("BRIDGE_MODELS") ? modelsFromIds(parseModelIds(env("BRIDGE_MODELS")!), authMode) : claudeConfig ? claudeConfigModels(claudeConfig).models : undefined),
-        [...(readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")) ?? []), ...codexMenuEnv(), ...googleMenuEnv()],
+        [...(readCursorMenu(env("BRIDGE_CURSOR_MODELS_FILE")) ?? []), ...codexMenuEnv(), ...googleMenuEnv(),
+          ...(env("BRIDGE_ROUTE_MODELS") === "1" ? routeModels() : [])],
       ),
   };
   for (const [name, value, minimum] of [

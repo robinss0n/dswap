@@ -1,5 +1,6 @@
-import { resolveRequestCwd } from "../workspace.js";
+import { droidWorkingDirectory, resolveRequestCwd } from "../workspace.js";
 import { markDroidActivity } from "../activity.js";
+import { conversationKey, ModelRouter, ROUTE_MODEL_PREFIX } from "../routing.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -58,6 +59,8 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
   const control = new ControlBroker(runtime, store, config.approvalTimeoutMs);
   runtime.setControl?.(control);
   const records: RedactedRequestRecord[] = [];
+  const router = config.models?.some((model) => model.id.startsWith(ROUTE_MODEL_PREFIX))
+    ? new ModelRouter(() => configuredModels(config)) : undefined;
   let authFailureCount = 0;
   let indexTimer: ReturnType<typeof setTimeout> | undefined;
   let indexDirty = false;
@@ -361,8 +364,16 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       res.setHeader("Connection", "close");
       throw new BridgeError(503, "bridge_shutting_down", "bridge is shutting down");
     }
-    const parsed = parseMessagesRequest(raw);
+    let parsed = parseMessagesRequest(raw);
     if (config.remoteWorkspace) markDroidActivity();
+    const routed = router ? await router.resolve(parsed.model, conversationKey(parsed, droidWorkingDirectory(parsed))) : undefined;
+    if (routed) {
+      if (!routed.reused) {
+        logger.info("route_chosen", { tier: routed.tier, provider: routed.provider, target: routed.target,
+          codexLoad: routed.loads.codex?.load ?? null, claudeLoad: routed.loads.claude?.load ?? null });
+      }
+      parsed = { ...parsed, model: routed.target };
+    }
     // Reject stale menu entries before binding a host or creating a session.
     if (config.models !== undefined) {
       if (!configuredModels(config).some((model) => model.id === parsed.model)) {

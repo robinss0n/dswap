@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { accounts, claudeAccounts, codexAccounts, countdown, renderTable, toRow } from "../../scripts/accounts.js";
+import { accounts, claudeAccounts, codexAccounts, countdown, poolSummary, renderTable, toRow } from "../../scripts/accounts.js";
 
 const NOW = Date.parse("2026-10-31T10:00:00Z");
 
@@ -66,5 +66,21 @@ describe("dswap subcommands call cswap", () => {
     fakeCswap();
     await expect(accounts(["disable"])).rejects.toThrow(/Usage: dswap/);
     await expect(accounts(["frobnicate"])).rejects.toThrow(/dswap switch/);
+  });
+});
+
+describe("pool summary", () => {
+  it("averages usable accounts per provider and names the provider tier models use", () => {
+    const base = { selector: "1", label: "1", email: "", plan: "" };
+    const summary = poolSummary([
+      { ...base, provider: "claude", fiveHour: 0, weekly: 100, status: "limited" },
+      { ...base, provider: "claude", fiveHour: 23, weekly: 36, status: "ok" },
+      { ...base, provider: "claude", fiveHour: 0, weekly: 93, status: "ok" },
+      { ...base, provider: "claude", fiveHour: 0, weekly: 0, status: "disabled", disabled: true },
+      { ...base, provider: "codex", fiveHour: 22, weekly: 88, status: "ok" },
+    ]);
+    expect(summary).toContain("claude combined (3): 5h 8% · week 76%");
+    expect(summary).toContain("codex combined (1): 5h 22% · week 88%");
+    expect(summary).toContain("now go to claude");
   });
 });
