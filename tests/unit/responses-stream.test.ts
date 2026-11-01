@@ -22,6 +22,27 @@ const request = () => parseResponsesRequest({ model: "codex:test", input: "hello
   { type: "custom", name: "ApplyPatch" }, { type: "tool_search", execution: "client" },
 ] });
 
+// Mirrors Droid's assistant converter: skipped reasoning does not flush text,
+// while tool calls do. Do not pass raw output items straight to the translator.
+function droidReplay(output: any[]) {
+  const input: any[] = [];
+  let text = "";
+  const flush = () => {
+    if (text) input.push({ role: "assistant", content: [{ type: "output_text", text }] });
+    text = "";
+  };
+  for (const item of output) {
+    if (item.type === "message") {
+      text += item.content.map((part: any) => part.text).join("");
+    } else if (item.type !== "reasoning") {
+      flush();
+      input.push(item);
+    }
+  }
+  flush();
+  return parseResponsesRequest({ model: "codex:test", input }).messages;
+}
+
 describe("Responses writer", () => {
   it("uses JSON errors before streaming begins", () => {
     const c = collect(), writer = new ResponsesWriter(c.res, request());
@@ -67,7 +88,7 @@ describe("Responses writer", () => {
     expect(events.map(e => e.sequence_number)).toEqual(events.map((_, i) => i));
     expect(events.filter(e => e.type === "response.completed")).toHaveLength(1);
     const output = events.find(e => e.type === "response.completed").response.output;
-    const replay = parseResponsesRequest({ model: req.model, input: output }).messages;
+    const replay = droidReplay(output);
     expect(replay).toEqual([{ role: "assistant", content }]);
     expect(historyMessageHashes(replay)).toEqual(historyMessageHashes([{ role: "assistant", content }]));
     expect(output.filter((i: any) => i.type === "reasoning").map((i: any) => i.summary.map((s: any) => s.text))).toEqual([["think more", "second"], ["third"]]);
@@ -75,11 +96,40 @@ describe("Responses writer", () => {
     expect(events.filter(e => e.type === "response.custom_tool_call_input.delta")[0].delta).toBe("*** patch");
     expect(events.filter(e => e.type === "response.function_call_arguments.delta")).toHaveLength(1);
   });
-  it("keeps trace and fallback text blocks separate", () => {
+  it("canonicalizes trace and fallback text to Droid replay segmentation", () => {
     const c = collect(), writer = new ResponsesWriter(c.res, request());
     writer.toolTrace("Read", "file");
     const msg = assistantMessage("codex:test", [{ type: "text", text: "one" }, { type: "text", text: "two" }], "end_turn");
-    expect(writer.finish(msg)).toEqual([{ type: "text", text: "\n[Read] file\n" }, ...msg.content]);
+    const content = writer.finish(msg);
+    expect(content).toEqual([{ type: "text", text: "\n[Read] file\nonetwo" }]);
+    expect(droidReplay(c.events().at(-1).response.output)).toEqual([{ role: "assistant", content }]);
+  });
+  it("joins text across omitted reasoning but preserves tool boundaries", () => {
+    const c = collect(), writer = new ResponsesWriter(c.res, request());
+    writer.textDelta("before");
+    writer.reasoningDelta("think", "r", 0);
+    writer.textDelta("after");
+    const tool: ContentBlock = { type: "tool_use", id: "call_read", name: "Read", input: { path: "file" } };
+    const msg = assistantMessage("codex:test", [tool], "tool_use");
+    const content = writer.completeContent(msg);
+    expect(content).toEqual([{ type: "text", text: "beforeafter" }, tool]);
+    expect(writer.finish(msg)).toEqual(content);
+    const replay = droidReplay(c.events().at(-1).response.output);
+    expect(replay).toEqual([{ role: "assistant", content }]);
+    expect(historyMessageHashes(replay)).toEqual(historyMessageHashes([{ role: "assistant", content }]));
+  });
+  it("joins fallback text only within each tool-delimited segment", () => {
+    const c = collect(), writer = new ResponsesWriter(c.res, request());
+    const tool: ContentBlock = { type: "tool_use", id: "call_read", name: "Read", input: {} };
+    const msg = assistantMessage("codex:test", [
+      { type: "text", text: "a" }, { type: "text", text: "b" }, tool,
+      { type: "text", text: "c" }, { type: "text", text: "d" },
+    ], "tool_use");
+    const content = writer.finish(msg);
+    expect(content).toEqual([{ type: "text", text: "ab" }, tool, { type: "text", text: "cd" }]);
+    const replay = droidReplay(c.events().at(-1).response.output);
+    expect(replay).toEqual([{ role: "assistant", content }]);
+    expect(historyMessageHashes(replay)).toEqual(historyMessageHashes([{ role: "assistant", content }]));
   });
   it("emits incomplete and counts cached usage", () => {
     const c = collect(), req = request(), writer = new ResponsesWriter(c.res, req);

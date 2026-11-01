@@ -217,7 +217,8 @@ export class ResponsesWriter implements TurnWriter {
     this.closeReasoning();
     if (!this.text) {
       this.text = { id: itemId("msg"), index: this.nextIndex++, text: "" };
-      this.wireContent.push({ type: "text", text: "" });
+      // Droid drops unencrypted reasoning and joins text until a tool boundary.
+      if (this.wireContent.at(-1)?.type !== "text") this.wireContent.push({ type: "text", text: "" });
       this.send("response.output_item.added", { output_index: this.text.index, item: messageItem(this.text.id, "", "in_progress") });
       this.send("response.content_part.added", { item_id: this.text.id, output_index: this.text.index, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
     }
