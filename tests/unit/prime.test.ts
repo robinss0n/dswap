@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { primeUnits } from "../../scripts/prime.js";
+import { markDroidActivity } from "../../src/activity.js";
 import {
   DEFAULT_PRIME_CONFIG, WINDOW_MS, decide, globalPause, inQuiet, lastDroidActivity, needsProbe, parseQuiet, primeLog, readPrimeLog, windowIdle,
   type PrimeState, type PrimeTarget,
@@ -69,6 +70,14 @@ describe("window priming rules", () => {
     expect(readPrimeLog(40, env, new Date(2026, 9, 31, 18, 0))).toEqual(["09:15:00 primed claude 2"]);
     expect(lastDroidActivity(env)).toBeUndefined();
     expect(lastDroidActivity({ DSWAP_ACTIVITY_DIR: dir })).toBeGreaterThan(0);
+  });
+
+  it("counts the bridge's mark for a Droid on another machine", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prime-"));
+    const env = { DSWAP_ACTIVITY_DIR: join(dir, "none"), DSWAP_BRIDGE_ACTIVITY_FILE: join(dir, "state/droid-activity") };
+    expect(lastDroidActivity(env)).toBeUndefined();
+    markDroidActivity(env, Date.now());
+    expect(lastDroidActivity(env)).toBeGreaterThan(Date.now() - 60_000);
   });
 
   it("runs from a oneshot service on a 5-minute timer that catches up after sleep", () => {

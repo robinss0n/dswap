@@ -1,4 +1,5 @@
 import { resolveRequestCwd } from "../workspace.js";
+import { markDroidActivity } from "../activity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -361,6 +362,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       throw new BridgeError(503, "bridge_shutting_down", "bridge is shutting down");
     }
     const parsed = parseMessagesRequest(raw);
+    if (config.remoteWorkspace) markDroidActivity();
     // Reject stale menu entries before binding a host or creating a session.
     if (config.models !== undefined) {
       if (!configuredModels(config).some((model) => model.id === parsed.model)) {

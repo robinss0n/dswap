@@ -7,7 +7,7 @@ import { providerFromModelId, type CursorModelParameter } from "../../models.js"
 import { applyCursorReasoning, droidReasoningLevel } from "../reasoning.js";
 import { BridgeError, type ContentBlock, type Json, type Usage } from "../../types.js";
 import { historyMessageHashes } from "../../sessions/correlate.js";
-import { resolveRequestCwd } from "../../workspace.js";
+import { processCwd, resolveRequestCwd } from "../../workspace.js";
 import { buildDynamicUserContent, buildInitialUserContent } from "../system-prompt.js";
 import { INTERRUPT_GRACE_MS } from "../turn-watchdog.js";
 import { upstreamError } from "../upstream-error.js";
@@ -332,7 +332,7 @@ export class CursorSdkRuntime implements BridgeRuntime {
       model: { id: selection.id, params: selection.params },
       tools,
       ...(apiKey ? { apiKey } : {}),
-      local: { cwd, ...(store ? { store } : {}), customTools: this.customTools(live, input) },
+      local: { cwd: processCwd(cwd, this.config), ...(store ? { store } : {}), customTools: this.customTools(live, input) },
     };
   }
 

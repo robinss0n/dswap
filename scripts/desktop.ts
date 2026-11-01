@@ -32,6 +32,8 @@ const installationSchema = z.object({ version: z.literal(1), port: z.number().in
   googleAccounts: z.array(z.string()).optional(),
   // Whose system prompt drives Claude; absent means Droid's.
   prompt: z.enum(["claude-code", "droid"]).optional(),
+  // Droid runs on another machine and reaches this bridge through an SSH tunnel.
+  remoteWorkspace: z.boolean().optional(),
   // Cursor menu selector (`default`, `first-party`, or an explicit list). The key stays out of this file.
   cursorModels: z.string().min(1).max(4000).optional() });
 type Installation = z.infer<typeof installationSchema>;
@@ -112,6 +114,7 @@ function serviceEnv(deps: DesktopDependencies, install: Installation): Record<st
     ...(install.accounts ? { BRIDGE_ACCOUNTS: install.accounts.join(",") } : {}),
     ...(install.codexModels?.length ? { BRIDGE_CODEX_MODELS: install.codexModels.join(","), BRIDGE_CODEX_ACCOUNTS: codexAccountsFor(install).join(",") } : {}),
     ...(install.googleModels?.length ? { BRIDGE_GOOGLE_MODELS: install.googleModels.join(","), BRIDGE_GOOGLE_ACCOUNTS: googleAccountsFor(install).join(",") } : {}),
+    ...(install.remoteWorkspace ? { BRIDGE_REMOTE_WORKSPACE: "1" } : {}),
     BRIDGE_PROMPT: install.prompt ?? "droid" };
 }
 /** systemd quoting: each assignment is double-quoted, with backslash, quote and % escaped. */
@@ -239,7 +242,11 @@ function googleAccountsFor(install: Installation): string[] {
   const accounts = listGoogleAccounts();
   return accounts.length === 1 ? [accounts[0]!.name] : ["auto"];
 }
-type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir" | "accounts" | "prompt" | "codexModels" | "codexAccounts" | "googleModels" | "googleAccounts">>;
+/** Only Droid's prompt runs no provider tools here, so only it may serve a Droid on another machine. */
+function assertRemoteWorkspace(install: Installation): void {
+  if (install.remoteWorkspace && (install.prompt ?? "droid") !== "droid") throw new Error("--remote-workspace on needs --prompt droid.");
+}
+type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir" | "accounts" | "prompt" | "remoteWorkspace" | "codexModels" | "codexAccounts" | "googleModels" | "googleAccounts">>;
 function parseOptions(action: string, options: string[]): DesktopOptions {
   const parsed: DesktopOptions = {};
   for (let index = 0; index < options.length; index += 2) {
@@ -252,12 +259,13 @@ function parseOptions(action: string, options: string[]): DesktopOptions {
     else if (flag === "--google-models" && ["install", "restart"].includes(action) && parsed.googleModels === undefined && value) parsed.googleModels = value === "none" ? [] : parseModelIds(value);
     else if (flag === "--google-accounts" && ["install", "restart"].includes(action) && parsed.googleAccounts === undefined && value) parsed.googleAccounts = value.split(",").map((account) => account.trim());
     else if (flag === "--prompt" && ["install", "restart"].includes(action) && parsed.prompt === undefined && (value === "droid" || value === "claude-code")) parsed.prompt = value;
+    else if (flag === "--remote-workspace" && ["install", "restart"].includes(action) && parsed.remoteWorkspace === undefined && (value === "on" || value === "off")) parsed.remoteWorkspace = value === "on";
     else if (flag === "--cursor-models" && ["install", "restart"].includes(action) && parsed.cursorModels === undefined && value) parsed.cursorModels = value;
     else if (flag === "--claude-config-dir" && ["install", "restart"].includes(action) && parsed.claudeConfigDir === undefined && value) {
       if (!isAbsolute(value)) throw new Error("--claude-config-dir must be an absolute profile directory.");
       parsed.claudeConfigDir = realpathSync(value);
     }
-    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code] [--codex-models id,id,...|none] [--codex-accounts default,auto,<name>,...] [--google-models id,id,...|none] [--google-accounts auto,<name>,...]; restart takes the same options except --port.");
+    else throw new Error("Options: install [--port <1..65535>] [--models id,id,...] [--cursor-models default|first-party|id,id,...] [--claude-config-dir /absolute/profile] [--accounts auto,<slot|alias>,...|none] [--prompt droid|claude-code] [--remote-workspace on|off] [--codex-models id,id,...|none] [--codex-accounts default,auto,<name>,...] [--google-models id,id,...|none] [--google-accounts auto,<name>,...]; restart takes the same options except --port.");
   }
   return parsed;
 }
@@ -381,7 +389,7 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     const cursorStatus = cursorCredentialStatus(paths.data, env, now);
     const cursorWarning = cursorExpiryWarning(cursorStatus, now);
     return { installed: true, plistPresent: existsSync(paths.plist), loaded, port: install.port, claudeConfigDir: install.claudeConfigDir ?? join(deps.home, ".claude"), models: install.models ?? "follow Claude Code settings",
-      accounts: install.accounts ?? [], prompt: install.prompt ?? "droid",
+      accounts: install.accounts ?? [], prompt: install.prompt ?? "droid", remoteWorkspace: Boolean(install.remoteWorkspace),
       codex: install.codexModels?.length ? { models: install.codexModels, accounts: codexAccountsFor(install) } : "off",
       google: install.googleModels?.length ? { models: install.googleModels, accounts: googleAccountsFor(install) } : "off",
       repositoryPresent: existsSync(join(install.repo, "dist/index.js")), healthy: await deps.health(install.port),
@@ -430,10 +438,13 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     const install: Installation = { ...previous, node: realpathSync(deps.node), ...(parsed.models ? { models: parsed.models } : {}),
       ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
       ...(parsed.accounts ? { accounts: parsed.accounts } : {}), ...(parsed.prompt ? { prompt: parsed.prompt } : {}),
+      ...(parsed.remoteWorkspace !== undefined ? { remoteWorkspace: parsed.remoteWorkspace } : {}),
       ...(parsed.codexModels ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}),
       ...(parsed.googleModels ? { googleModels: parsed.googleModels } : {}), ...(parsed.googleAccounts ? { googleAccounts: parsed.googleAccounts } : {}) };
     if (install.codexModels?.length === 0) delete install.codexModels;
     if (install.googleModels?.length === 0) delete install.googleModels;
+    if (!install.remoteWorkspace) delete install.remoteWorkspace;
+    assertRemoteWorkspace(install);
     if (install.accounts?.length === 0) delete install.accounts;
     if (cursorModels) install.cursorModels = cursorModels;
     else delete install.cursorModels;
@@ -457,11 +468,12 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     : cursorLoggedIn(deps) ? {} : { warning: cursorAbsentNotice() };
   const install: Installation = { version: 1, port, repo: realpathSync(deps.repo), node: realpathSync(deps.node), path: deps.path, ...(parsed.models ? { models: parsed.models } : {}), ...(cursor.menu ? { cursorModels: parsed.cursorModels } : {}),
     ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
-    prompt: parsed.prompt ?? "droid",
+    prompt: parsed.prompt ?? "droid", ...(parsed.remoteWorkspace ? { remoteWorkspace: true } : {}),
     ...(parsed.codexModels?.length ? { codexModels: parsed.codexModels } : {}), ...(parsed.codexAccounts ? { codexAccounts: parsed.codexAccounts } : {}),
     ...(parsed.googleModels?.length ? { googleModels: parsed.googleModels } : {}), ...(parsed.googleAccounts ? { googleAccounts: parsed.googleAccounts } : {}) };
   // Account copies are opt-in: with `dswap auto on`, the plain entries follow cswap's switches in place.
   if (parsed.accounts?.length) install.accounts = parsed.accounts;
+  assertRemoteWorkspace(install);
   assertClaudeCredential(readDesktopClaudeConfig(deps, install));
   checkedRun(deps, deps.node, [join(deps.repo, "node_modules/typescript/bin/tsc"), "-p", join(deps.repo, "tsconfig.build.json")]);
   if (!existsSync(join(install.repo, "dist/index.js"))) throw new Error("Missing built dist/index.js. Run npm run build.");
