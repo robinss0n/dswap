@@ -893,7 +893,7 @@ export class SdkRuntime implements BridgeRuntime {
       allowedTools: ["mcp__droid__*"],
       env, permissionMode: this.config.desktopProfile || this.config.permissionMode === "ask" ? "default" : "bypassPermissions",
       allowDangerouslySkipPermissions: !this.config.desktopProfile && this.config.permissionMode !== "ask", abortController: abort,
-      systemPrompt: this.config.promptMode === "droid" ? buildDroidSystemPrompt(input) : buildPresetSystemPrompt(this.config.desktopProfile),
+      systemPrompt: this.config.promptMode === "droid" ? buildDroidSystemPrompt(input, this.config.remoteWorkspace) : buildPresetSystemPrompt(this.config.desktopProfile),
       canUseTool: async (name: string, toolInput: Record<string, unknown>, context?: NativePermissionContext) => live.queryEpoch === epoch
         ? this.canUseTool(live, name, toolInput, context)
         : { behavior: "deny", message: "This native query has been retired." },
