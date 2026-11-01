@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configureDroid } from "../../scripts/configure-droid.js";
+import { configureDroid, droidBaseModel } from "../../scripts/configure-droid.js";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -17,7 +17,22 @@ function paths(): { settings: string; backup: string; manifest: string; args: st
 }
 
 describe("configure Droid", () => {
-  it("uses stable opaque Messages routes for Codex and preserves Opus selection through migration and repeats", () => {
+  it.each([
+    ...["gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna",
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.3-codex", "gpt-6-astra-ultrafast",
+      "gpt-6-luna-flex"].map((id) => [id, id]),
+    ["future-astra", "gpt-6-astra"], ["future-terra", "gpt-6.1-terra"],
+    ["future-luna", "gpt-6-luna"], ["unknown", "gpt-6.1-sol"],
+  ])("maps Codex %s to GPT base %s", (model, expected) => {
+    expect(droidBaseModel({ id: `codex:default:${model}`, model, provider: "codex", displayName: model })).toBe(expected);
+  });
+
+  it("uses the resolved Codex upstream for its base", () => {
+    expect(droidBaseModel({ id: "codex:default:alias", model: "alias", upstream: "gpt-6.1-terra",
+      provider: "codex", displayName: "Alias" })).toBe("gpt-6.1-terra");
+  });
+
+  it("uses stable opaque Responses routes for Codex and preserves Opus selection through migration and repeats", () => {
     const { settings, args } = paths();
     const catalog = [
       { id: "opus", model: "opus", displayName: "Claude Code · Opus" },
@@ -35,10 +50,14 @@ describe("configure Droid", () => {
       const result = JSON.parse(readFileSync(settings, "utf8"));
       expect(result.customModels).toHaveLength(3);
       expect(result.sessionDefaultSettings.model).toBe("custom:Claude-Code-·-Opus-0");
-      expect(result.customModels[0].model).toBe("opus");
+      expect(result.customModels[0]).toMatchObject({ model: "opus", provider: "anthropic",
+        baseUrl: "http://127.0.0.1:18787", authMode: "bearer", baseModelId: "claude-sonnet-5-5" });
       for (const entry of result.customModels.slice(1)) {
         expect(entry.model).toMatch(/^relay-[a-f0-9]{32}$/);
-        expect(entry.provider).toBe("anthropic");
+        expect(entry.provider).toBe("openai");
+        expect(entry.baseUrl).toBe("http://127.0.0.1:18787/v1");
+        expect(entry).not.toHaveProperty("authMode");
+        expect(entry.baseModelId).toBe(catalog[result.customModels.indexOf(entry)]!.model);
       }
       expect(result.customModels[1].model).not.toBe(result.customModels[2].model);
     }
@@ -57,7 +76,7 @@ describe("configure Droid", () => {
     ];
     configureDroid(args.slice(0, -2), { BRIDGE_CLIENT_TOKEN: "test" }, catalog);
     const bases = JSON.parse(readFileSync(settings, "utf8")).customModels.map((entry: { baseModelId: string }) => entry.baseModelId);
-    expect(bases).toEqual(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-sonnet-5-5"]);
+    expect(bases).toEqual(["claude-sonnet-5-5", "claude-haiku-5-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-opus-5-5", "claude-sonnet-5-5", "gpt-6.1-sol"]);
   });
 
   it("writes literal tokens privately, preserves other settings, and keeps the original backup across repeats", () => {

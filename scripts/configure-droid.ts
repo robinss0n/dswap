@@ -180,8 +180,26 @@ const OWN_BASE_MODELS = new Set(["claude-haiku-5-5", "claude-opus-5-5"]);
 /** Bases meant to keep direct tools; `desktop status` warns if Droid moves one to Script mode. */
 export const DIRECT_BASE_MODELS = [DROID_BASE_MODEL, "claude-haiku-5-5"];
 
+const GPT_BASE_MODELS = new Set([
+  "gpt-5-2025-08-07", "gpt-5-mini-2025-08-07", "gpt-5-nano-2025-08-07", "gpt-5-codex",
+  "gpt-5.1", "gpt-5.1-codex", "gpt-5.1-codex-max", "gpt-5.2", "gpt-5.2-codex",
+  "gpt-5.3-codex", "gpt-5.3-codex-fast", "gpt-5.4", "gpt-5.4-fast", "gpt-5.4-mini", "gpt-5.4-mini-fast",
+  "gpt-5.5", "gpt-5.5-fast", "gpt-5.5-pro", "gpt-5.6-sol", "gpt-5.6-sol-fast",
+  "gpt-5.6-terra", "gpt-5.6-terra-flex", "gpt-5.6-luna", "gpt-5.6-luna-flex",
+  "gpt-6-astra", "gpt-6-astra-ultrafast", "gpt-6-astra-flex", "gpt-6.1-sol", "gpt-6.1-sol-ultrafast",
+  "gpt-6.1-terra", "gpt-6-sol", "gpt-6-sol-fast", "gpt-6-sol-flex",
+  "gpt-6-luna", "gpt-6-luna-fast", "gpt-6-luna-flex",
+]);
+
 export function droidBaseModel(model: BridgeModel): string {
   const runs = model.upstream ?? model.model;
+  if (model.provider === "codex") {
+    if (GPT_BASE_MODELS.has(runs)) return runs;
+    if (runs.includes("astra")) return "gpt-6-astra";
+    if (runs.includes("terra")) return "gpt-6.1-terra";
+    if (runs.includes("luna")) return "gpt-6-luna";
+    return "gpt-6.1-sol";
+  }
   return (model.provider ?? "claude") === "claude" && OWN_BASE_MODELS.has(runs) ? runs : DROID_BASE_MODEL;
 }
 
@@ -223,8 +241,12 @@ export function configureDroid(argv: string[], env: NodeJS.ProcessEnv = process.
   const previous = managedModels(metadataPath), existing = current.customModels ?? [];
   const owned = ownedModels(existing, previous);
   const kept = existing.filter((item) => !owned.has(item));
-  const incoming: CustomModel[] = configured.map((model) => ({ model: droidModelId(model.id), displayName: model.displayName, baseUrl, apiKey: token,
-    baseModelId: droidBaseModel(model), provider: "anthropic", authMode: "bearer", maxOutputTokens: 4096 }));
+  const incoming: CustomModel[] = configured.map((model) => ({ model: droidModelId(model.id), displayName: model.displayName,
+    baseUrl: model.provider === "codex" ? `${baseUrl}/v1` : baseUrl, apiKey: token,
+    baseModelId: droidBaseModel(model),
+    // Droid's bearer override is Anthropic-only; OpenAI uses bearer authentication natively.
+    ...(model.provider === "codex" ? { provider: "openai" } : { provider: "anthropic", authMode: "bearer" }),
+    maxOutputTokens: 4096 }));
   const combined = [...kept, ...incoming], oldIds = selectionIds(existing), newIds = selectionIds(combined);
   const defaultSelection = newIds[kept.length + configured.findIndex((model) => model.id === defaultId)]!;
   const canonicalForModel = new Map(configured.flatMap((model, index) =>

@@ -123,12 +123,11 @@ interface LiveCodex {
  * apply_patch_tool_type an apply_patch that would bypass Droid's Edit, and the
  * search fields a web search tool. The bridge hands app-server a copy of the
  * account's catalog without them (absent = off; null fails to parse).
- * tool_mode stays code_mode_only: Droid's tools are then called from Codex's
- * `exec` cell, which runs them in parallel. "direct" made each call its own
- * model round trip (3 reads: ~2 s apart instead of within 2 ms, codex-cli 0.165.0).
+ * Script requests use a separate direct-tool catalog so Codex does not wrap
+ * Droid's execution harness in its own exec cell. Other requests keep code mode.
  * Returns the copy's path, or undefined to keep Codex's own catalog.
  */
-export function droidCodexCatalog(codexHome: string, outDir: string, account: string): string | undefined {
+export function droidCodexCatalog(codexHome: string, outDir: string, account: string, direct = false): string | undefined {
   let catalog: { models?: Array<Record<string, unknown>> };
   try { catalog = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8")); } catch { return undefined; }
   if (!Array.isArray(catalog.models) || catalog.models.length === 0) return undefined;
@@ -136,9 +135,10 @@ export function droidCodexCatalog(codexHome: string, outDir: string, account: st
     const copy: Record<string, unknown> = { ...model, supports_search_tool: false, node_repl_disabled: true, experimental_supported_tools: [] };
     // Absent means off: multi-agent "disabled", no apply_patch or web search tool.
     for (const key of ["multi_agent_version", "multi_agent_reasoning_effort", "apply_patch_tool_type", "web_search_tool_type"]) delete copy[key];
+    if (direct) copy.tool_mode = "direct";
     return copy;
   });
-  const path = join(outDir, `codex-catalog-${account}.json`);
+  const path = join(outDir, `codex-catalog-${account}${direct ? "-direct" : ""}.json`);
   writeFileSync(path, JSON.stringify({ models }), { mode: 0o600 });
   return path;
 }
@@ -425,7 +425,8 @@ export class CodexRuntime implements BridgeRuntime {
     const account = await this.resolveAccount(route.account);
     const home = codexAccountHome(account);
     const cwd = processCwd(resolveRequestCwd(input.headers, input.request, this.config), this.config);
-    const catalog = droidCodexCatalog(home, this.config.dataDir, account);
+    const script = input.request.tools?.some((tool) => tool.name === "Script") ?? false;
+    const catalog = droidCodexCatalog(home, this.config.dataDir, account, script);
     if (!catalog) {
       this.deps.alerts?.alert(`codex-catalog-${account}`, "dswap: Codex fallback",
         `Codex account ${account} has no model catalog to adjust, so Codex adds its own tools (sub-agents, apply_patch) next to Droid's. Droid's prompt is still the base prompt.`);
@@ -456,8 +457,9 @@ export class CodexRuntime implements BridgeRuntime {
       features: {
         ...CODEX_BUILTIN_FEATURES_OFF, ...CODEX_SIDE_EFFECT_FEATURES_OFF,
         // Only the thread config applies this; `-c code_mode...` had no effect (codex-cli 0.165.0).
-        code_mode: { enabled: true, default_exec_yield_time_ms: CODEX_EXEC_YIELD_MS },
+        code_mode: script ? { enabled: false } : { enabled: true, default_exec_yield_time_ms: CODEX_EXEC_YIELD_MS },
       },
+      ...(input.request.responses?.verbosity ? { model_verbosity: input.request.responses.verbosity } : {}),
       web_search: "disabled",
       include_permissions_instructions: false, include_environment_context: false,
       // More Codex-harness context Droid already covers or does not use: the
@@ -499,7 +501,10 @@ export class CodexRuntime implements BridgeRuntime {
     // toolRefusal until Droid loads them. Codex's deferLoading is not used: codex-cli
     // 0.165.0 fails thread/start with "deferred dynamic tool must include a namespace"
     // for a top-level deferred tool.
-    const deferred = toolsAllowed ? deferredToolDefinitions(input.request.messages, advertisedNames) : [];
+    const deferred = toolsAllowed ? [...new Map([
+      ...deferredToolDefinitions(input.request.messages, advertisedNames),
+      ...(input.request.responses?.deferredTools ?? []),
+    ].filter((tool) => !advertisedNames.has(tool.name)).map((tool) => [tool.name, tool])).values()] : [];
     const mode = toolsAllowed ? FACTORY_MODE_TOOLS.filter((name) => !advertisedNames.has(name) && !deferred.some((tool) => tool.name === name)).map(modePlaceholder) : [];
     live.registered = new Map([
       ...advertised.map((tool) => [tool.name, "advertised"] as const),
@@ -511,7 +516,7 @@ export class CodexRuntime implements BridgeRuntime {
       // Droid's prompt replaces Codex's own 21k-char harness prompt (skills,
       // plugins, sub-agents, functions.exec) instead of sitting under it.
       ...(droidPrompt ? { baseInstructions: droidPrompt } : {}),
-      developerInstructions: CODEX_DEVELOPER_INSTRUCTIONS,
+      ...(!script ? { developerInstructions: CODEX_DEVELOPER_INSTRUCTIONS } : {}),
       // The read-only sandbox only bounds Codex's own built-in tools, which are off.
       // Codex still told the model so twice: "the sandbox only permits reading
       // files" (permissions instructions) and a read-only permission_profile in
@@ -556,6 +561,7 @@ export class CodexRuntime implements BridgeRuntime {
     const level = droidReasoningEffort(input.request);
     const started = await live.server!.request<{ turn: { id: string } }>("turn/start", {
       threadId: live.threadId, input: items, model, ...(level && EFFORT[level] ? { effort: EFFORT[level] } : {}),
+      ...(input.request.responses?.reasoningSummary ? { summary: input.request.responses.reasoningSummary } : {}),
     });
     live.turnId = started.turn.id;
     live.sent = true;
@@ -599,7 +605,9 @@ export class CodexRuntime implements BridgeRuntime {
   private notification(live: LiveCodex, method: string, params: any): void {
     if (live.ended) return;
     live.sink?.activity?.();
-    if (method === "item/agentMessage/delta" && typeof params?.delta === "string") {
+    if (method === "item/reasoning/summaryTextDelta" && typeof params?.delta === "string") {
+      live.sink?.reasoningDelta?.(params.delta, params.itemId, params.summaryIndex);
+    } else if (method === "item/agentMessage/delta" && typeof params?.delta === "string") {
       if (typeof params.itemId === "string") live.streamed.add(params.itemId);
       this.appendText(live, params.delta, params.itemId);
     } else if (method === "item/completed" && params?.item?.type === "agentMessage" && typeof params.item.text === "string" && !live.streamed.has(params.item.id)) {

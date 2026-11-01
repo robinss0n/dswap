@@ -8,6 +8,8 @@ import { join } from "node:path";
 import type { BridgeConfig } from "../config.js";
 import { appendLogLine, type Logger } from "../logging.js";
 import { parseMessagesRequest } from "../protocol/validate.js";
+import { parseResponsesRequest } from "../protocol/responses.js";
+import { ResponsesWriter, responsesJson, writeResponsesError, type TurnWriter } from "./responses-stream.js";
 import { apiError } from "../protocol/messages.js";
 import { explicitSessionId, historyMessageHashes, historyPrefixHash, resolveSession, roleFromHeaders, sessionContextHash } from "../sessions/correlate.js";
 import { droidReasoningEffort, droidReasoningLevel } from "../runtime/reasoning.js";
@@ -238,7 +240,8 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       logger.warn("request_rejected", error instanceof BridgeError
         ? { path: req.url?.split("?")[0], status: error.status, code: error.code, message: error.message.slice(0, 300) }
         : { path: req.url?.split("?")[0], status: 500, code: "internal_error" });
-      writeError(res, error);
+      if (/^\/v1\/responses\/?$/.test(req.url?.split("?")[0] ?? "")) writeResponsesError(res, error);
+      else writeError(res, error);
     }
   });
 
@@ -347,10 +350,14 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       await handleMessages(req, res);
       return;
     }
+    if (req.method === "POST" && (path === "/v1/responses" || path === "/v1/responses/")) {
+      await handleMessages(req, res, "responses");
+      return;
+    }
     json(res, 404, apiError(404, "not_found_error", `no route ${req.method} ${path}`));
   }
 
-  async function handleMessages(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handleMessages(req: IncomingMessage, res: ServerResponse, api: "messages" | "responses" = "messages"): Promise<void> {
     const headers = req.headers;
     try {
       requireClientToken(headers, config.clientToken);
@@ -369,7 +376,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       res.setHeader("Connection", "close");
       throw new BridgeError(503, "bridge_shutting_down", "bridge is shutting down");
     }
-    let parsed = parseMessagesRequest(raw);
+    let parsed = api === "responses" ? parseResponsesRequest(raw) : parseMessagesRequest(raw);
     // Droid sends the opaque Codex ID from its settings; route on the bridge's own ID.
     const alias = configuredModels(config).find((model) => droidModelId(model.id) === parsed.model);
     if (alias) parsed.model = alias.id;
@@ -457,8 +464,8 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       activeRequests.delete(sessionId);
       throw error;
     }
-    const writer = request.stream
-      ? new SseWriter(res, { id: messageId(), model: request.model })
+    const writer: TurnWriter | undefined = request.stream
+      ? api === "responses" ? new ResponsesWriter(res, request) : new SseWriter(res, { id: messageId(), model: request.model })
       : undefined;
     let completed = false;
     let cancellationRequested = false;
@@ -519,6 +526,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
     const sink: StreamSink = {
       textDelta: (text) => { watchdog.touch(); if (writer && !completed && !cancellationRequested) writer.textDelta(text); },
       toolTrace: (name, detail) => { watchdog.touch(); if (writer && !completed && !cancellationRequested) writer.toolTrace(name, detail); },
+      reasoningDelta: (text, item, part) => { watchdog.touch(); if (writer && !completed && !cancellationRequested) writer.reasoningDelta?.(text, item, part); },
       activity: () => watchdog.touch(),
       approvalsPending: (count) => watchdog.setPaused(count > 0),
     };
@@ -550,7 +558,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
         : { sha256: createHash("sha256").update(rawBody).digest("hex"), bytes: rawBody.length, toolNames: (request.tools ?? []).map((t) => t.name) };
       appendLogLine(
         requestLog,
-        JSON.stringify({ at: new Date().toISOString(), path: "/v1/messages", headers: redactHeaders(headers as Record<string, string | string[] | undefined>), body: loggedBody, session: sessionId }),
+        JSON.stringify({ at: new Date().toISOString(), path: req.url?.split("?")[0], headers: redactHeaders(headers as Record<string, string | string[] | undefined>), body: loggedBody, session: sessionId }),
       );
       res.setHeader("X-Bridge-Session", sessionId);
       res.setHeader("X-Bridge-Role", role);
@@ -592,7 +600,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       })));
       completed = true;
       if (writer) writer.finish(turn.response);
-      else json(res, 200, turn.response);
+      else json(res, 200, api === "responses" ? responsesJson(turn.response, request) : turn.response);
     } catch (error) {
       completed = true;
       logger.warn("request_failed", {
@@ -628,6 +636,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       }
       // Answer now; the slot below may still be held while a timed-out turn stops.
       if (writer) writer.fail(error);
+      else if (api === "responses") writeResponsesError(res, error);
       else writeError(res, error);
     } finally {
       watchdog.dispose();

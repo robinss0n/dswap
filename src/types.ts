@@ -67,6 +67,20 @@ export interface MessagesRequest {
   /** Messages-compatible gateways can carry a named reasoning effort here. */
   reasoning_effort?: Json;
   cache_control?: Json;
+  /** Set only by the Responses front end (src/protocol/responses.ts). */
+  responses?: ResponsesOptions;
+}
+
+/** What a Responses request said that the Messages shape cannot. */
+export interface ResponsesOptions {
+  /** Freeform (`custom`) tools. Runtimes see them as functions taking one string, `input`. */
+  customTools: string[];
+  /** Set when Droid sent native tool search; calls to this tool go back as `tool_search_call`. */
+  toolSearch?: string;
+  /** Tools Droid marked `defer_loading` and has not loaded yet, with their real schemas. */
+  deferredTools: ToolDefinition[];
+  verbosity?: string;
+  reasoningSummary?: string;
 }
 
 export interface Usage {

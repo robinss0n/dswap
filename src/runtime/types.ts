@@ -28,6 +28,11 @@ export interface RuntimeTurn {
 export interface StreamSink {
   textDelta(text: string): void;
   toolTrace(name: string, detail: string): void;
+  /**
+   * Native reasoning summary text. `item` names the reasoning item and `part` its
+   * summary part, so a new item or part starts a new block for the client.
+   */
+  reasoningDelta?(text: string, item: string, part: number): void;
   usage?(usage: import("../types.js").Usage): void;
   /** Native progress of any kind, such as an SDK message. Restarts the turn's idle timeout. */
   activity?(): void;

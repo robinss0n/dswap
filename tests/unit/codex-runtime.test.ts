@@ -198,6 +198,70 @@ describe("CodexRuntime thread resume", () => {
   });
 });
 
+describe("CodexRuntime Responses", () => {
+  it.each([false, true])("configures Script=%s on start and resume, forwarding summaries without transcript pollution", async (script) => {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const opening: Message = { role: "user", content: "go" };
+    const extra: Partial<MessagesRequest> = {
+      tools: [{ name: script ? "Script" : "Read", input_schema: { type: "object" } }],
+      responses: { customTools: [], deferredTools: [], verbosity: "low", reasoningSummary: "auto" },
+    };
+    const reasoningDelta = vi.fn();
+    const first = runtime.handle(input([opening], extra), { textDelta() {}, toolTrace() {}, reasoningDelta });
+    await tick();
+    expect(fake.state.threadStart.config.features.code_mode).toEqual(script
+      ? { enabled: false } : { enabled: true, default_exec_yield_time_ms: CODEX_EXEC_YIELD_MS });
+    expect(fake.state.threadStart.developerInstructions).toBe(script ? undefined : CODEX_DEVELOPER_INSTRUCTIONS);
+    expect(fake.state.threadStart.config.model_verbosity).toBe("low");
+    expect(fake.state.turnStarts[0].summary).toBe("auto");
+    fake.notify("item/reasoning/summaryTextDelta", { itemId: "reason-1", delta: "Considering", summaryIndex: 2 });
+    fake.notify("item/agentMessage/delta", { itemId: "answer", delta: "done" });
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    const turn = await first;
+    expect(reasoningDelta).toHaveBeenCalledWith("Considering", "reason-1", 2);
+    expect(turn.response.content).toEqual([{ type: "text", text: "done" }]);
+    await runtime.endHostSession(session.bridgeSessionId, "host-ended");
+    const next = runtime.handle(input([
+      opening, { role: "assistant", content: turn.response.content }, { role: "user", content: "continue" },
+    ], { ...extra, responses: { ...extra.responses!, verbosity: "high" } }));
+    await tick();
+    expect(fake.state.threadResumes[0].config).toMatchObject({
+      model_verbosity: "high", features: { code_mode: { enabled: !script } },
+    });
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    await next;
+    await runtime.close();
+  });
+
+  it("deduplicates deferred schemas, preferring Responses definitions and advertised tools", async () => {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const schema = { type: "object", properties: { url: { type: "string" } }, required: ["url"] };
+    const pending = runtime.handle(input([{ role: "user", content: "<system-reminder>\nDeferred tools:\nFetchUrl\nWebSearch\nRead\n</system-reminder>" }], {
+      responses: { customTools: [], deferredTools: [
+        { name: "FetchUrl", input_schema: schema }, { name: "FetchUrl", input_schema: schema },
+        { name: "Read", input_schema: schema },
+      ] },
+    }));
+    await tick();
+    const tools = fake.state.threadStart.dynamicTools;
+    expect(tools.filter((tool: any) => tool.name === "FetchUrl")).toEqual([
+      expect.objectContaining({ inputSchema: schema }),
+    ]);
+    expect(tools.filter((tool: any) => tool.name === "Read")).toEqual([
+      expect.objectContaining({ inputSchema: { type: "object" } }),
+    ]);
+    expect(tools.every((tool: any) => tool.deferLoading === undefined)).toBe(true);
+    expect(await fake.call("not-loaded", "FetchUrl", { url: "https://example.com" })).toMatchObject({
+      success: false, contentItems: [{ text: expect.stringContaining("select:FetchUrl") }],
+    });
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    await pending;
+    await runtime.close();
+  });
+});
+
 describe("CodexRuntime", () => {
   it("answers parallel tool calls in one response, and never drops a call Droid has not seen", async () => {
     const fake = fakeServer();
@@ -707,6 +771,10 @@ describe("droidCodexCatalog", () => {
       slug: "gpt-6.1-sol", tool_mode: "code_mode_only", supports_search_tool: false, node_repl_disabled: true,
       experimental_supported_tools: [], context_window: 500000,
     });
+    const direct = droidCodexCatalog(home, out, "default", true)!;
+    expect(direct).toBe(join(out, "codex-catalog-default-direct.json"));
+    expect(JSON.parse(readFileSync(direct, "utf8")).models).toEqual([{ ...model, tool_mode: "direct" }]);
+    expect(JSON.parse(readFileSync(path, "utf8")).models).toEqual([model]);
   });
 
   it("keeps Codex's own catalog when there is no cache to copy", () => {
