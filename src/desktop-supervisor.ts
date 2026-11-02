@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { appendLogLine } from "./logging.js";
@@ -53,7 +53,8 @@ export async function superviseDesktop(repo: string, state: string, signal: Abor
   } } finally { await owned.close(); }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Node runs the main module from its real path; argv[1] keeps a symlinked repo path.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href) {
   const controller = new AbortController();
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => controller.abort());
   const [repo, state] = process.argv.slice(2);

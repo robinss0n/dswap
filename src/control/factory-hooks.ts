@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -224,7 +224,8 @@ export async function factoryHookMain(argv = process.argv.slice(2), env: NodeJS.
   if (result.additionalContext) process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: object(event) ? event.hook_event_name : "SessionStart", additionalContext: result.additionalContext }, suppressOutput: true })}\n`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+// Node runs the main module from its real path; argv[1] keeps a symlinked repo path.
+if (process.argv[1] && existsSync(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href) {
   factoryHookMain().catch((error: unknown) => {
     process.stderr.write(`${factoryHookFailureMessage(error)}\n`);
     process.exitCode = 1;
