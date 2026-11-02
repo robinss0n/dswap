@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { accountsRoot } from "../names.js";
 import { droidActivityMarkTime } from "../activity.js";
 
 /**
@@ -121,7 +122,7 @@ export function duration(ms: number): string {
 
 // ── files ─────────────────────────────────────────────────────────────────────
 export function primeDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.BRIDGE_PRIME_DIR ?? join(env.HOME ?? homedir(), ".local/share/factory-cc-accounts/prime");
+  return env.BRIDGE_PRIME_DIR ?? join(accountsRoot(env), "prime");
 }
 
 function readJson<T>(path: string, fallback: T): T {

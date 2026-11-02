@@ -614,7 +614,7 @@ export class CodexRuntime implements BridgeRuntime {
       ...mode.map((tool) => [tool.name, "mode"] as const),
     ]);
     const started = await server.request<{ thread: { id: string } }>("thread/start", {
-      cwd, model: route.model, approvalPolicy: "never", sandbox: "read-only", serviceName: "factory-cc",
+      cwd, model: route.model, approvalPolicy: "never", sandbox: "read-only", serviceName: "dswap",
       // Droid's prompt replaces Codex's own 21k-char harness prompt (skills,
       // plugins, sub-agents, functions.exec) instead of sitting under it.
       ...(droidPrompt ? { baseInstructions: droidPrompt } : {}),

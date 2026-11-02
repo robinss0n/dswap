@@ -4,7 +4,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-dswap is a fork of [aa2246740/factory-cc](https://github.com/aa2246740/factory-cc) ("Relay Bridge"). It adds Codex and Google backends, multi-account routing and the `dswap` dashboard. The bridge underneath works as described below; on-disk names (`factory-cc-accounts`, the service and hook names) keep the old name so existing installs keep working.
+dswap began as a fork of [aa2246740/factory-cc](https://github.com/aa2246740/factory-cc) ("Relay Bridge"); see [Credits](#credits). It adds Codex and Google backends, multi-account routing and the `dswap` dashboard. Installations from before the rename move to the dswap names on the next `npm run desktop -- restart`; the old folders stay behind as symlinks.
 
 Connect Factory Droid's BYOK custom models to the **official Claude Agent SDK and unmodified Claude Code**. Claude Code retains its native system prompt, built-in tools, and sessions; Droid executes its own skills, tasks, plugin tools, and Mission lifecycle operations via namespaced MCP.
 
@@ -45,7 +45,7 @@ Put the extra backends into Droid's model menu with the desktop installer:
 npm run desktop -- restart --codex-models gpt-6.1-sol --google-models gemini-3.8-flash-high --google-accounts auto
 ```
 
-Each account keeps its own sign-in folder under `~/.local/share/factory-cc-accounts/`. The bridge never reads or copies tokens.
+Each account keeps its own sign-in folder under `~/.local/share/dswap-accounts/`. The bridge never reads or copies tokens.
 
 > [!WARNING]
 > **Google accounts: use at your own risk.** Google's [Antigravity Additional Terms](https://antigravity.google/terms/) forbid "using third party software, tools, or services to access the Service", and Google has [suspended accounts](https://github.com/google-gemini/gemini-cli/discussions/20632) for it (so far, tools that reused Antigravity's sign-in token). This bridge runs Google's unmodified agent over its official ACP interface, identifies itself honestly and never touches the token, but that does not make it approved. Bans so far applied to Antigravity / Gemini CLI access, not whole Google accounts. Through this bridge you get Gemini models only: Antigravity offers Claude/GPT models only to the editors on its allow-list (Zed, JetBrains, Android Studio, Xcode).
@@ -64,9 +64,9 @@ To bind Droid to a separate Claude profile, run `npm run desktop -- install --cl
 
 Installation modifies or creates the following paths and prints their absolute paths in the command output:
 
-- `~/Library/LaunchAgents/ai.factory-cc.bridge.plist`, which runs the Node binary used at install time and `dist/index.js` from the current repository, saving the install-time `HOME` and `PATH` without storing credentials or upstream helper commands.
-- `~/Library/Application Support/factory-cc/` with `0700` permissions; inside it, `client-token`, `admin-token`, `hook-token`, `installation.json`, `models.env`, `stdout.log`, and `stderr.log` are private files with token permissions set to `0600`; `bridge-data/` stores sessions and runtime logs.
-- `~/.factory/settings.json`, along with the initial backup `settings.json.relay-bridge.bak` (or `settings.json.relay-bridge.bak.absent` if the original file did not exist) and ownership metadata `settings.json.relay-bridge.models.json`. Each model entry's `apiKey` is Bridge's local client token (file mode `0600`), which can only access the Bridge on `127.0.0.1` on this machine—it is not a model provider API key. `apiKeyHelper` is not used here: Droid strips executable credential commands from runtime settings loaded by Mission workers and validators (logged as `Stripped executable custom-model credential commands`), which would cause all of them to fail with 401 when using a helper. When a Mission starts, Droid snapshots these entries along with the token into `runtime-custom-models.json` (`0600`) inside that Mission's directory.
+- `~/Library/LaunchAgents/ai.dswap.bridge.plist` (Linux: the systemd user unit `~/.config/systemd/user/dswap-bridge.service`), which runs the Node binary used at install time and `dist/index.js` from the current repository, saving the install-time `HOME` and `PATH` without storing credentials or upstream helper commands.
+- `~/Library/Application Support/dswap/` (Linux: `~/.local/state/dswap/`) with `0700` permissions; inside it, `client-token`, `admin-token`, `hook-token`, `installation.json`, `models.env`, `stdout.log`, and `stderr.log` are private files with token permissions set to `0600`; `bridge-data/` stores sessions and runtime logs.
+- `~/.factory/settings.json`, along with the initial backup `settings.json.dswap.bak` (or `settings.json.dswap.bak.absent` if the original file did not exist) and ownership metadata `settings.json.dswap.models.json`. Each model entry's `apiKey` is Bridge's local client token (file mode `0600`), which can only access the Bridge on `127.0.0.1` on this machine—it is not a model provider API key. `apiKeyHelper` is not used here: Droid strips executable credential commands from runtime settings loaded by Mission workers and validators (logged as `Stripped executable custom-model credential commands`), which would cause all of them to fail with 401 when using a helper. When a Mission starts, Droid snapshots these entries along with the token into `runtime-custom-models.json` (`0600`) inside that Mission's directory.
 
 No user-level or project hooks are installed. The working directory is extracted from `% pwd` in the latest Droid `User system info` system-reminder. Droid typically places this at the start of the first user message; when switching models mid-conversation, it places a new block before the new question; after compaction, it follows Droid's summary. Only contiguous system-reminders at the very beginning of a user message are inspected—content pasted into the user body and tool results are ignored. A missing, invalid, root, or Bridge state directory returns 400 (open a project folder in Droid first); changing directories within the same session returns 409. Requests that disallow all tools (such as Droid's summary-generation request during compaction) do not require a project directory and run in an empty `auxiliary-cwd` directory under the Bridge state directory, where all tools are denied. This origin restriction relies on Droid's request structure and is not identity authentication against arbitrary API clients holding the local token.
 
@@ -334,3 +334,11 @@ The repository's primary verification entrypoint is `npm run verify:relay -- --f
 | `npm run test:e2e:chat` / `npm run test:e2e:mission` | Live chat / Mission validation | Yes, run separately and record results |
 
 See [Compatibility](docs/COMPATIBILITY.md) for additional protocol boundaries. `FACTORY_AIRGAP_ENABLED=1` in the public CLI is an observed technical behavior, not an official authorization statement.
+
+## Credits
+
+dswap started as a fork of [factory-cc](https://github.com/aa2246740/factory-cc) ("Relay Bridge") by [@aa2246740](https://github.com/aa2246740). The bridge at its core comes from that project: Factory Droid running through the official Claude Agent SDK and unmodified Claude Code, Droid's own tools exposed over MCP, native session continuity, Mission support, the approval controls and the verification tooling. Thank you for building it and publishing it.
+
+dswap adds Codex and Google backends, several accounts per provider with live limits and automatic switching, the `dswap` dashboard and window priming, quota routing, remote workspaces, and its own work on compaction, context usage and session continuity. The git history keeps each author's commits.
+
+factory-cc does not include a license file yet, so dswap does not add one either; the original code remains its author's.

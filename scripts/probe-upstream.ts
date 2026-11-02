@@ -26,7 +26,7 @@ async function main(): Promise<void> {
     notes: [
       "Probe never prints secret values.",
       "Claude Code env uses ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN with ANTHROPIC_API_KEY empty.",
-      "ANTHROPIC_BASE_URL is never the Relay Bridge listen address.",
+      "ANTHROPIC_BASE_URL is never the dswap bridge listen address.",
     ],
   };
   writeJson(join(process.cwd(), "evidence/upstream-probe.json"), report);

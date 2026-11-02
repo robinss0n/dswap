@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { accountsRoot } from "../names.js";
 
 /**
  * Account checks shared between processes on this machine. Several dashboards and the priming
@@ -14,7 +15,7 @@ const LOCK_STALE_MS = 3 * 60_000;
 const WAIT_MS = 90_000;
 
 export function cacheDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.DSWAP_CACHE_DIR ?? join(env.HOME ?? homedir(), ".local/share/factory-cc-accounts/cache");
+  return env.DSWAP_CACHE_DIR ?? join(accountsRoot(env), "cache");
 }
 
 const fileName = (key: string) => key.replace(/[^A-Za-z0-9._-]/g, "_");

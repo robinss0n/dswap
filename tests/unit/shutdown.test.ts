@@ -71,7 +71,7 @@ describe("CLI shutdown", () => {
       BRIDGE_MODE: "mock", BRIDGE_HOST: "127.0.0.1", BRIDGE_PORT: "0",
       BRIDGE_DATA_DIR: tempDir(), BRIDGE_CLIENT_TOKEN: "shutdown-test-only", BRIDGE_PERSIST: "0",
     });
-    await bridge.waitFor("Relay Bridge listening");
+    await bridge.waitFor("dswap bridge listening");
     bridge.child.kill(signal);
     expect(await bridge.exited).toEqual({ code: 0, signal: null });
     expect(bridge.output()).toContain("shutdown_started");

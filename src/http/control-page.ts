@@ -108,7 +108,7 @@ const script = String.raw`
       try {
         await request('/internal/approvals/' + encodeURIComponent(item.id), {
           decision, ...(updatedInput === undefined ? {} : { updatedInput }),
-          ...(decision === 'deny' ? { message: 'User denied this request in Relay Bridge.' } : {}),
+          ...(decision === 'deny' ? { message: 'User denied this request in the dswap bridge.' } : {}),
         }, currentGeneration);
         if (currentGeneration !== generation) return;
         card.remove();
@@ -226,7 +226,7 @@ button.secondary { color: inherit; background: transparent; border-color: light-
 export function controlPageHtml(): string {
   return `<!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Relay Bridge · 执行审批</title><style>${style}</style></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>dswap · 执行审批</title><style>${style}</style></head>
 <body>
 <main>
 <h1>执行审批</h1>

@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { controlBaseUrl } from "./control.js";
 
-const help = `Generate a project Droid using your configured local Relay Bridge (BYOK).
+const help = `Generate a project Droid using your configured local dswap bridge (BYOK).
 
   node --import tsx scripts/generate-droid.ts --cwd <project> --name <name> --description <task>
   node --import tsx scripts/generate-droid.ts --cwd <project> --install-command
@@ -112,9 +112,9 @@ name: relay-droid
 description: "Create or generate a new reusable custom Factory Droid, agent or subagent using the local BYOK generator. 新建、创建或生成自定义 Droid、Agent、子代理。Only for explicit requests to create agent definitions; not normal conversation, running Mission or Agent Readiness, or invoking an existing agent."
 ---
 
-# Create a custom Droid with Relay Bridge
+# Create a custom Droid with the dswap bridge
 
-Use this skill when the user asks to create a new reusable custom Droid/agent definition for this project. The installed generator uses the configured local Relay Bridge and BYOK model.
+Use this skill when the user asks to create a new reusable custom Droid/agent definition for this project. The installed generator uses the configured local dswap bridge and BYOK model.
 
 ## Choose the correct operation
 
@@ -148,7 +148,7 @@ export function installDroidCommand(cwd: string): string {
   const repository = dirname(dirname(fileURLToPath(import.meta.url)));
   const tsx = join(repository, "node_modules/tsx/dist/loader.mjs");
   if (!existsSync(tsx)) throw new Error("Install this repository's npm dependencies first.");
-  const script = `#!/bin/sh\n# Generate a project Droid through the configured local Relay Bridge.\nexec ${shellQuote(process.execPath)} --import ${shellQuote(pathToFileURL(tsx).href)} ${shellQuote(fileURLToPath(import.meta.url))} --cwd ${shellQuote(root)} "$@"\n`;
+  const script = `#!/bin/sh\n# Generate a project Droid through the configured local dswap bridge.\nexec ${shellQuote(process.execPath)} --import ${shellQuote(pathToFileURL(tsx).href)} ${shellQuote(fileURLToPath(import.meta.url))} --cwd ${shellQuote(root)} "$@"\n`;
   const files = [{ path, contents: script, mode: 0o700 }, { path: skillPath, contents: discoverySkill(path), mode: 0o600 }];
   // Preflight both files before any writes, including a legacy command-only install.
   for (const file of files) installedFileMatches(file.path, file.contents, file.mode === 0o700);

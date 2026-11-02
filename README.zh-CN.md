@@ -1,4 +1,6 @@
-# Relay Bridge
+# dswap
+
+dswap 最初 fork 自 [aa2246740/factory-cc](https://github.com/aa2246740/factory-cc)（"Relay Bridge"），见[致谢](#致谢)。
 
 [English](README.md) | 简体中文
 
@@ -20,9 +22,9 @@ npm run desktop -- install
 
 安装会修改或创建这些路径，并在命令输出中列出绝对路径：
 
-- `~/Library/LaunchAgents/ai.factory-cc.bridge.plist`，运行安装时的 Node 和当前仓库的 `dist/index.js`，保存当时的 `HOME`、`PATH`，不保存凭证或上游 helper 命令。
-- `~/Library/Application Support/factory-cc/`，权限 `0700`；其中 `client-token`、`admin-token`、`hook-token`、`installation.json`、`models.env`、`stdout.log`、`stderr.log` 为私有文件，token 权限 `0600`；`bridge-data/` 保存会话和运行日志。
-- `~/.factory/settings.json`，以及首次备份 `settings.json.relay-bridge.bak` 或原文件不存在时的 `settings.json.relay-bridge.bak.absent`，还有所有权元数据 `settings.json.relay-bridge.models.json`。模型条目的 `apiKey` 是 Bridge 的本地 client token（文件权限 0600），只能访问这台机器 127.0.0.1 上的 Bridge，不是模型供应商的密钥。这里不用 `apiKeyHelper`：Droid 会从 Mission worker 和 validator 加载的运行时设置中删除可执行的凭证命令（日志 `Stripped executable custom-model credential commands`），用 helper 时它们会全部 401。Mission 启动时会把这些条目连同 token 快照到该 Mission 目录的 `runtime-custom-models.json`（0600）。
+- `~/Library/LaunchAgents/ai.dswap.bridge.plist`（Linux：systemd 用户单元 `~/.config/systemd/user/dswap-bridge.service`），运行安装时的 Node 和当前仓库的 `dist/index.js`，保存当时的 `HOME`、`PATH`，不保存凭证或上游 helper 命令。
+- `~/Library/Application Support/dswap/`（Linux：`~/.local/state/dswap/`），权限 `0700`；其中 `client-token`、`admin-token`、`hook-token`、`installation.json`、`models.env`、`stdout.log`、`stderr.log` 为私有文件，token 权限 `0600`；`bridge-data/` 保存会话和运行日志。
+- `~/.factory/settings.json`，以及首次备份 `settings.json.dswap.bak` 或原文件不存在时的 `settings.json.dswap.bak.absent`，还有所有权元数据 `settings.json.dswap.models.json`。模型条目的 `apiKey` 是 Bridge 的本地 client token（文件权限 0600），只能访问这台机器 127.0.0.1 上的 Bridge，不是模型供应商的密钥。这里不用 `apiKeyHelper`：Droid 会从 Mission worker 和 validator 加载的运行时设置中删除可执行的凭证命令（日志 `Stripped executable custom-model credential commands`），用 helper 时它们会全部 401。Mission 启动时会把这些条目连同 token 快照到该 Mission 目录的 `runtime-custom-models.json`（0600）。
 
 不安装用户级或项目 hooks。工作目录取自最新一段 Droid `User system info` system-reminder 里的 `% pwd`。Droid 通常把它放在首条 user 消息开头；对话中换模型时，会把新的一段放到新问题之前；压缩后，它跟在 Droid 的摘要后面。只看 user 消息开头连续的 system-reminder，不看用户正文里粘贴的内容和工具结果。缺失、无效、根目录或 Bridge 状态目录会返回 400，请先在 Droid 打开项目文件夹；同一会话换目录会返回 409。不允许任何工具的请求（例如 Droid 压缩时生成摘要的请求）不需要项目目录，在 Bridge 状态目录下的空目录 `auxiliary-cwd` 运行，那里所有工具都会被拒绝。此来源限制依赖 Droid 的请求结构，不是对持有本地 token 的任意 API 客户端的身份认证。
 
@@ -286,3 +288,11 @@ Factory 生命周期已通过官方 [hooks](https://docs.factory.com/harness/hoo
 | `npm run test:e2e:chat` / `npm run test:e2e:mission` | 在线对话 / Mission 验收 | 是，另行执行并记录结果 |
 
 更多协议边界见 [Compatibility](docs/COMPATIBILITY.md)。公共 CLI 的 `FACTORY_AIRGAP_ENABLED=1` 是已观察到的技术行为，不等于官方授权声明。
+
+## 致谢
+
+dswap 最初 fork 自 [@aa2246740](https://github.com/aa2246740) 的 [factory-cc](https://github.com/aa2246740/factory-cc)（"Relay Bridge"）。桥接的核心来自那个项目：通过官方 Claude Agent SDK 和未修改的 Claude Code 运行 Factory Droid、经 MCP 暴露 Droid 自己的工具、原生会话延续、Mission 支持、审批控制和验证工具。感谢作者构建并公开它。
+
+dswap 在此基础上加入了 Codex 和 Google 后端、每个提供方多账号（实时额度与自动切换）、`dswap` 面板与窗口预热、按额度路由、远程工作区，以及在压缩、上下文用量和会话延续方面的改进。git 历史保留了每位作者的提交。
+
+factory-cc 目前没有许可证文件，因此 dswap 也没有添加；原始代码的权利仍归原作者所有。

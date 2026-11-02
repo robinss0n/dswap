@@ -4,6 +4,7 @@ import type { BridgeRuntime, RuntimeApprovalRequest, RuntimeControl, RuntimePerm
 import type { SessionStore } from "../sessions/store.js";
 import { BridgeError, type ContentBlock, type MessagesRequest } from "../types.js";
 import { canonicalWorkspacePath } from "../workspace.js";
+import { SESSION_MARKER, SESSION_MARKER_PATTERN } from "../names.js";
 
 type ObjectValue = Record<string, unknown>;
 interface HostBinding {
@@ -113,7 +114,7 @@ export class ControlBroker implements RuntimeControl {
     const request = structuredClone(original);
     const found = new Set<HostBinding>();
     let markers = 0;
-    const clean = (text: string): string => text.replace(/\[factory-cc-session:([a-f0-9]{64})\]/g, (marker, token: string) => {
+    const clean = (text: string): string => text.replace(SESSION_MARKER_PATTERN, (marker, token: string) => {
       markers += 1;
       const host = this.tokens.get(token);
       if (host && !host.ended) found.add(host);
@@ -251,7 +252,7 @@ export class ControlBroker implements RuntimeControl {
       }
       host.cwdAliases.add(resolve(event.cwd));
       this.observePermissionMode(host, event);
-      return { ok: true, bindingToken: host.token, additionalContext: `[factory-cc-session:${host.token}]` };
+      return { ok: true, bindingToken: host.token, additionalContext: `[${SESSION_MARKER}:${host.token}]` };
     }
     if (!host) throw new BridgeError(409, "host_not_registered", "SessionStart must register the Factory session first.");
     if (token !== host.token) throw new BridgeError(409, "stale_host_event", "Factory event is missing its live session generation or belongs to a prior one.");
@@ -265,7 +266,7 @@ export class ControlBroker implements RuntimeControl {
       // Factory can discard the original SessionStart message during its own
       // automatic compaction. Reattach the authenticated generation at each
       // real user turn instead of inferring ownership from compacted text.
-      return { ok: true, additionalContext: `[factory-cc-session:${host.token}]` };
+      return { ok: true, additionalContext: `[${SESSION_MARKER}:${host.token}]` };
     }
 
     if (event.hook_event_name === "PostToolUse") {

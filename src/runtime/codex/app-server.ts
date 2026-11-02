@@ -72,7 +72,7 @@ export class CodexAppServer {
 
   /** Handshake. `experimentalApi` is needed for dynamic tools. */
   async initialize(): Promise<{ codexHome?: string; userAgent?: string }> {
-    const result = await this.request("initialize", { clientInfo: { name: "factory-cc", title: "factory-cc bridge", version: "0.1.0" }, capabilities: { experimentalApi: true } });
+    const result = await this.request("initialize", { clientInfo: { name: "dswap", title: "dswap bridge", version: "0.1.0" }, capabilities: { experimentalApi: true } });
     this.notify("initialized");
     return result as { codexHome?: string; userAgent?: string };
   }

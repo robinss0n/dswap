@@ -14,7 +14,7 @@ const MISSING = "__DSWAP_MISSING__", LOG = "__DSWAP_LOG__";
 const REMOTE_ENV = 'export PATH="$HOME/.local/bin:$PATH"; d="$HOME/.local/bin/dswap"';
 
 export function remoteStatusScript(): string {
-  return `${REMOTE_ENV}; [ -x "$d" ] || { echo ${MISSING}; exit 0; }; "$d" prime status; echo ${LOG}; tail -n 300 "$HOME/.local/share/factory-cc-accounts/prime/prime.log" 2>/dev/null; exit 0`;
+  return `${REMOTE_ENV}; [ -x "$d" ] || { echo ${MISSING}; exit 0; }; "$d" prime status; echo ${LOG}; f="$HOME/.local/share/dswap-accounts/prime/prime.log"; [ -e "$f" ] || f="$HOME/.local/share/factory-cc-accounts/prime/prime.log"; tail -n 300 "$f" 2>/dev/null; exit 0`;
 }
 
 export function remoteToggleScript(on: boolean): string {

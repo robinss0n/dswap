@@ -3,7 +3,7 @@
 ```text
 Droid chat / Mission roles
   -> localhost Anthropic Messages (POST /v1/messages)
-  -> Relay Bridge
+  -> dswap bridge
   -> official Claude Agent SDK (sdk mode) or mock/fake runtime
   -> unmodified Claude Code
   -> configured Anthropic-compatible BYOK endpoint or existing Claude authentication

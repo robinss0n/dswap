@@ -33,7 +33,7 @@ describe("Messages protocol", () => {
     });
     expect(json.status).toBe(200);
     const content = json.json.content as Array<{ text?: string }>;
-    expect(content[0]?.text).toContain("relay-bridge mock: text probe ok");
+    expect(content[0]?.text).toContain("dswap mock: text probe ok");
 
     const stream = await fetch(`${app.url}/v1/messages`, {
       method: "POST",
@@ -49,7 +49,7 @@ describe("Messages protocol", () => {
     expect(stream.headers.get("content-type")).toContain("text/event-stream");
     expect(raw).toContain("event: message_start");
     expect(raw).toContain("event: content_block_delta");
-    expect(raw).toContain("relay-bridge mock: text probe ok");
+    expect(raw).toContain("dswap mock: text probe ok");
     expect(raw).toContain("event: message_stop");
   });
 

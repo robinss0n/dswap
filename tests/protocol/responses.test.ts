@@ -31,7 +31,7 @@ describe("Responses protocol", () => {
       ],
     });
     expect(response.status).toBe(200);
-    expect(JSON.stringify(await response.json())).toContain("relay-bridge mock: text probe ok");
+    expect(JSON.stringify(await response.json())).toContain("dswap mock: text probe ok");
   });
 
   it("returns JSON and SSE on both endpoint spellings and logs the actual path", async () => {
@@ -41,7 +41,7 @@ describe("Responses protocol", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       object: "response", status: "completed", model: "relay-probe",
-      output: [{ type: "message", id: expect.any(String), content: [{ type: "output_text", text: "relay-bridge mock: text probe ok" }] }],
+      output: [{ type: "message", id: expect.any(String), content: [{ type: "output_text", text: "dswap mock: text probe ok" }] }],
       usage: { total_tokens: expect.any(Number) },
     });
     const stream = await post(app, token, { model: "relay-probe", input: "another text probe", stream: true }, "/v1/responses/?test=1");
@@ -51,7 +51,7 @@ describe("Responses protocol", () => {
     for (const event of ["response.created", "response.in_progress", "response.output_item.added", "response.output_text.delta", "response.output_text.done", "response.completed"]) {
       expect(raw).toContain(`event: ${event}\n`);
     }
-    expect(raw).toContain("relay-bridge mock: text probe ok");
+    expect(raw).toContain("dswap mock: text probe ok");
     expect(raw).not.toContain("event: message_start");
     const logged = readFileSync(join(config.logDir, "requests.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(logged.map((entry) => entry.path)).toEqual(["/v1/responses", "/v1/responses/"]);

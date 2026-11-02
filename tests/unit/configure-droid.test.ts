@@ -13,7 +13,7 @@ function paths(): { settings: string; backup: string; manifest: string; args: st
   directories.push(directory);
   const settings = join(directory, "settings.json");
   const manifest = join(directory, "manifest.env");
-  return { settings, backup: `${settings}.relay-bridge.bak`, manifest, args: ["--settings", settings, "--manifest", manifest, "--models", "glm-5.2"] };
+  return { settings, backup: `${settings}.dswap.bak`, manifest, args: ["--settings", settings, "--manifest", manifest, "--models", "glm-5.2"] };
 }
 
 describe("configure Droid", () => {
@@ -41,7 +41,7 @@ describe("configure Droid", () => {
     const oldModels = catalog.map((m) => ({ model: m.id, displayName: m.displayName, provider: "anthropic", baseUrl: "http://127.0.0.1:18787", apiKey: "test" }));
     const configArgs = [...args.slice(0, -2), "--preserve-selections"];
     writeFileSync(settings, JSON.stringify({ customModels: oldModels, sessionDefaultSettings: { model: "custom:Claude-Code-·-Opus-0" } }));
-    writeFileSync(`${settings}.relay-bridge.models.json`, JSON.stringify({ version: 1, models: oldModels.map((m) => ({
+    writeFileSync(`${settings}.dswap.models.json`, JSON.stringify({ version: 1, models: oldModels.map((m) => ({
       id: m.model, signature: createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.entries(m)
         .filter(([key]) => key !== "apiKey").sort(([a], [b]) => a.localeCompare(b))))).digest("hex"),
     })) }));
@@ -105,7 +105,7 @@ describe("configure Droid", () => {
     writeFileSync(settings, '{"theme":"dark"}');
     configureDroid(args, { BRIDGE_CLIENT_TOKEN: "k" });
     configureDroid([...args, "--revert"], {});
-    for (const path of [backup, `${backup}.absent`, `${settings}.relay-bridge.models.json`]) expect(existsSync(path)).toBe(false);
+    for (const path of [backup, `${backup}.absent`, `${settings}.dswap.models.json`]) expect(existsSync(path)).toBe(false);
     expect(() => configureDroid([...args, "--revert"], {})).toThrow("No backup to revert.");
   });
 
@@ -137,8 +137,8 @@ describe("configure Droid", () => {
     expect(final.sessionDefaultSettings.model).toBeUndefined();
     expect(final.missionOrchestratorModel).toBeUndefined();
     expect(final.missionModelSettings.workerModel).toBeUndefined(); expect(final.missionModelSettings.validationWorkerModel).toBeUndefined();
-    expect(existsSync(`${settings}.relay-bridge.bak`)).toBe(false);
-    expect(existsSync(`${settings}.relay-bridge.models.json`)).toBe(false);
+    expect(existsSync(`${settings}.dswap.bak`)).toBe(false);
+    expect(existsSync(`${settings}.dswap.models.json`)).toBe(false);
   });
 
   it("keeps a user's selection of their own model and follows its renumbering after revert", () => {
@@ -165,7 +165,7 @@ describe("configure Droid", () => {
     configureDroid([...args, "--revert"], {});
     expect(JSON.parse(readFileSync(settings, "utf8")).theme).toBe("dark");
     expect(JSON.parse(readFileSync(settings, "utf8")).customModels).toEqual([]);
-    expect(existsSync(`${settings}.relay-bridge.bak.absent`)).toBe(false);
+    expect(existsSync(`${settings}.dswap.bak.absent`)).toBe(false);
   });
 
   it("missing credentials do not create or change any files", () => {
@@ -209,7 +209,7 @@ describe("configure Droid", () => {
     expect(parsed.missionModelSettings.validationWorkerModel).toBe(parsed.sessionDefaultSettings.model);
     expect(readFileSync(manifest, "utf8")).toContain("DROID_WORKER_MODEL_ID=custom:GLM-5.2-0");
     expect(result.modelIds).toEqual(["glm-5.2"]);
-    const metadata = `${settings}.relay-bridge.models.json`;
+    const metadata = `${settings}.dswap.models.json`;
     expect(statSync(metadata).mode & 0o777).toBe(0o600);
     expect(readFileSync(metadata, "utf8")).not.toContain("test-key");
     configureDroid([...args, "--revert"], {});

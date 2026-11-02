@@ -78,7 +78,7 @@ export function cursorLoginFromSdk(dataDir: string, sdk: CursorPlatformModule, h
       openBrowser: true,
       onLoginUrl,
       store,
-      apiKeyName: `factory-cc (${host})`,
+      apiKeyName: `dswap (${host})`,
       apiKeyTtlMs: sdk.DEFAULT_LOGIN_API_KEY_TTL_MS,
     });
     return { apiKey: result.apiKey, email: result.email, apiKeyExpiresAtMs: result.apiKeyExpiresAtMs };

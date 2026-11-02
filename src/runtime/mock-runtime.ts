@@ -8,8 +8,8 @@ import { maybeForceMissionSpawn } from "./mission-tools.js";
 import { pickSafeReadonlyTool } from "./safe-tools.js";
 import type { BridgeRuntime, RuntimeRequest, RuntimeTurn } from "./types.js";
 
-const TEXT_OK = "relay-bridge mock: text probe ok";
-const TOOL_OK_PREFIX = "relay-bridge mock: tool result accepted";
+const TEXT_OK = "dswap mock: text probe ok";
+const TOOL_OK_PREFIX = "dswap mock: tool result accepted";
 
 export class MockRuntime implements BridgeRuntime {
   readonly kind = "mock" as const;

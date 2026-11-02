@@ -145,7 +145,7 @@ async function main(): Promise<void> {
     throw error;
   }
   logger.info("listening", { url: app.url, mode: config.mode });
-  console.log(`Relay Bridge listening on ${app.url} mode=${config.mode}`);
+  console.log(`dswap bridge listening on ${app.url} mode=${config.mode}`);
   console.log("Health: GET /healthz");
   console.log("Messages: POST /v1/messages");
 }

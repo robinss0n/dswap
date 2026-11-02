@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { accountsRoot } from "../src/names.js";
 import { emitKeypressEvents, type Key } from "node:readline";
 import { readPrimeLog } from "../src/upstream/prime.js";
 import { DEFAULT_TTL_MS, cachedProbe } from "../src/upstream/probe-cache.js";
@@ -129,7 +130,7 @@ export interface DswapSettings {
 }
 
 export function settingsPath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.DSWAP_SETTINGS ?? join(env.HOME ?? homedir(), ".local/share/factory-cc-accounts/dswap-settings.json");
+  return env.DSWAP_SETTINGS ?? join(accountsRoot(env), "dswap-settings.json");
 }
 export function loadSettings(env: NodeJS.ProcessEnv = process.env): DswapSettings {
   try { return existsSync(settingsPath(env)) ? JSON.parse(readFileSync(settingsPath(env), "utf8")) as DswapSettings : {}; } catch { return {}; }

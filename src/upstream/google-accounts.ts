@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { accountsRoot, runtimesRoot } from "../names.js";
 import { AcpClient, type AcpClientOptions } from "../runtime/antigravity/acp-client.js";
 import { BridgeError } from "../types.js";
 
@@ -21,12 +22,12 @@ export function validGoogleAccount(name: string): boolean {
 }
 
 export function googleAccountsDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.BRIDGE_GOOGLE_ACCOUNTS_DIR ?? join(env.HOME ?? homedir(), ".local/share/factory-cc-accounts/google");
+  return env.BRIDGE_GOOGLE_ACCOUNTS_DIR ?? join(accountsRoot(env), "google");
 }
 
 /** Installed by `dswap runtime google`; BRIDGE_ANTIGRAVITY_EXECUTABLE overrides it. */
 export function antigravityRuntimeDir(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.HOME ?? homedir(), ".local/share/factory-cc-runtimes/antigravity");
+  return join(runtimesRoot(env), "antigravity");
 }
 
 export function antigravityExecutable(env: NodeJS.ProcessEnv = process.env): string {

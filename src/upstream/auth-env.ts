@@ -220,7 +220,7 @@ function baseEnv(sourceEnv: NodeJS.ProcessEnv): Record<string, string> {
   }
   env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = sourceEnv.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ?? "1";
   env.API_TIMEOUT_MS = sourceEnv.API_TIMEOUT_MS ?? "600000";
-  env.CLAUDE_AGENT_SDK_CLIENT_APP = sourceEnv.CLAUDE_AGENT_SDK_CLIENT_APP ?? "relay-bridge/0.1.0";
+  env.CLAUDE_AGENT_SDK_CLIENT_APP = sourceEnv.CLAUDE_AGENT_SDK_CLIENT_APP ?? "dswap/0.1.0";
   env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1";
   return env;
 }
@@ -377,6 +377,6 @@ function truthy(value: string | undefined): boolean {
 export function refuseBridgeLoop(baseUrl: string | undefined, bridgeListen: string): void {
   if (!baseUrl) return;
   if ((bridgeListen && baseUrl.includes(bridgeListen)) || /127\.0\.0\.1:1878/.test(baseUrl)) {
-    throw new Error("refusing to point Claude Code ANTHROPIC_BASE_URL at Relay Bridge");
+    throw new Error("refusing to point Claude Code ANTHROPIC_BASE_URL at the dswap bridge");
   }
 }

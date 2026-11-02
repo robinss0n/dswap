@@ -1,5 +1,6 @@
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { preferExisting, stateRoot } from "./names.js";
 
 /**
  * When Droid runs on another machine, this machine has no Droid session files, so the
@@ -7,7 +8,9 @@ import { dirname, join } from "node:path";
  */
 export function droidActivityFile(env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (env.DSWAP_BRIDGE_ACTIVITY_FILE) return env.DSWAP_BRIDGE_ACTIVITY_FILE;
-  return env.HOME ? join(env.HOME, ".local/state/factory-cc/droid-activity") : undefined;
+  if (!env.HOME) return undefined;
+  const state = stateRoot(env.HOME, "linux");
+  return join(preferExisting(state.current, state.legacy), "droid-activity");
 }
 
 let lastMark = 0;

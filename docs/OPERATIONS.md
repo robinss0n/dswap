@@ -25,7 +25,7 @@ If a Node upgrade removes the installed executable, run `restart` with the new N
 
 ```bash
 npm run desktop -- status
-launchctl print gui/$(id -u)/ai.factory-cc.bridge
+launchctl print gui/$(id -u)/ai.dswap.bridge
 ```
 
 `status` reads `/healthz` and uses the private admin-token file to summarize `/internal/runtime`. It prints no token or account address. `/healthz` stays limited to `{ ok, mode }`; it does not verify provider access.
@@ -48,7 +48,7 @@ If all slots hold live work, expect 429. The bridge does not restart itself or d
 
 ## Diagnose startup and provider errors
 
-Read the private `stdout.log`, `stderr.log`, and `bridge-data/logs/bridge.jsonl` under `~/Library/Application Support/factory-cc`. Keep credentials and conversation bodies out of reports.
+Read the private `stdout.log`, `stderr.log`, and `bridge-data/logs/bridge.jsonl` under `~/Library/Application Support/dswap` (Linux: `~/.local/state/dswap`). Keep credentials and conversation bodies out of reports.
 
 - For `desktop_waiting_for_files`, check the external volume, registered repository and Node paths, built entrypoints, and nonempty private token files. Do not recreate the mountpoint on the internal disk.
 - For `desktop_retry`, inspect the preceding child error. `EADDRINUSE` means another listener owns the port. A token-file read error or config validation error needs the named local file or setting corrected. The supervisor retries without killing the port owner.

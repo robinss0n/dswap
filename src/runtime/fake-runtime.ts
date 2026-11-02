@@ -38,7 +38,7 @@ export class FakeRuntime implements BridgeRuntime {
       }
       const settled = await Promise.all(results.map((r) => query.mailbox.wait(r.tool_use_id, 5_000)));
       const summary = settled.map((r) => `${r.callId}:${textFromBlocks(typeof r.content === "string" ? r.content : r.content)}`).join(" | ");
-      const text = `relay-bridge fake: resumed after tool results (${summary})`;
+      const text = `dswap fake: resumed after tool results (${summary})`;
       query.events.push({ at: now(), type: "assistant_final", data: { text } });
       return {
         response: assistantMessage(input.request.model, [{ type: "text", text }], "end_turn", estimatedUsage(input.request, text.length)),
@@ -49,7 +49,7 @@ export class FakeRuntime implements BridgeRuntime {
 
     const tools = input.request.tools ?? [];
     if (tools.length === 0) {
-      const text = `relay-bridge fake: ${lastUserText(input.request.messages) || "ok"}`;
+      const text = `dswap fake: ${lastUserText(input.request.messages) || "ok"}`;
       return {
         response: assistantMessage(input.request.model, [{ type: "text", text }], "end_turn", estimatedUsage(input.request, text.length)),
         pendingToolIds: [],

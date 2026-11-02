@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { accountsRoot } from "../names.js";
 import { CodexAppServer } from "../runtime/codex/app-server.js";
 import { BridgeError } from "../types.js";
 import { providerCliEnv } from "./auth-env.js";
@@ -22,7 +23,7 @@ export function validCodexAccount(name: string): boolean {
 }
 
 export function codexAccountsDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.BRIDGE_CODEX_ACCOUNTS_DIR ?? join(env.HOME ?? homedir(), ".local/share/factory-cc-accounts/codex");
+  return env.BRIDGE_CODEX_ACCOUNTS_DIR ?? join(accountsRoot(env), "codex");
 }
 
 export interface CodexAccountRef { name: string; home: string }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { desktop, desktopPaths, type DesktopDependencies } from "../../scripts/desktop.js";
@@ -58,7 +58,7 @@ it("preserves original settings and later user edits on surgical uninstall", asy
   expect(after.customModels.map((model: { model: string }) => model.model)).toEqual(["mine", "later"]);
   expect(after.theme).toBe("dark"); expect(after.hooks).toEqual({ original: true });
   expect(existsSync(paths.state)).toBe(false); expect(existsSync(paths.plist)).toBe(false);
-  expect(existsSync(`${paths.settings}.relay-bridge.bak`)).toBe(false);
+  expect(existsSync(`${paths.settings}.dswap.bak`)).toBe(false);
 });
 it("restores absent settings and supports repeated uninstall", async () => {
   const { deps, paths } = fixture(); await desktop(["install"], deps); await desktop(["uninstall"], deps);
@@ -69,7 +69,7 @@ it("restart re-reads the catalog and preserves unrelated models", async () => {
   writeFileSync(join(deps.home, ".claude/settings.json"), JSON.stringify({ apiKeyHelper: "never-run", env: { ANTHROPIC_DEFAULT_OPUS_MODEL: "fixture-opus" } }));
   await desktop(["restart"], deps);
   expect(JSON.parse(readFileSync(paths.settings, "utf8")).customModels.map((v: { model: string }) => v.model)).toEqual(["opus"]);
-  expect(run.mock.calls.slice(-2)).toEqual([["launchctl", ["bootout", "gui/501/ai.factory-cc.bridge"]], ["launchctl", ["bootstrap", "gui/501", paths.plist]]]);
+  expect(run.mock.calls.slice(-2)).toEqual([["launchctl", ["bootout", "gui/501/ai.dswap.bridge"]], ["launchctl", ["bootstrap", "gui/501", paths.plist]]]);
 });
 it("restart rebuilds dist before the service is replaced", async () => {
   const { deps, run } = fixture(); await desktop(["install"], deps);
@@ -339,14 +339,14 @@ it("installs a systemd user service on Linux with Droid's prompt; account copies
   const linux = { ...deps, platform: "linux" };
   const paths = desktopPaths(deps.home, "linux");
   await desktop(["install", "--port", "19877", "--accounts", "auto"], linux);
-  expect(paths.plist).toBe(join(deps.home, ".config/systemd/user/factory-cc-bridge.service"));
-  expect(paths.state).toBe(join(deps.home, ".local/state/factory-cc"));
+  expect(paths.plist).toBe(join(deps.home, ".config/systemd/user/dswap-bridge.service"));
+  expect(paths.state).toBe(join(deps.home, ".local/state/dswap"));
   const unit = readFileSync(paths.plist, "utf8");
   expect(unit).toContain("[Service]"); expect(unit).toContain("bridge-launcher.sh"); expect(unit).toContain("Restart=always");
   expect(unit).toContain('Environment="BRIDGE_PROMPT=droid"'); expect(unit).toContain('Environment="BRIDGE_ACCOUNTS=auto"');
   expect(unit).toContain('Environment="BRIDGE_PORT=19877"');
   expect(run).toHaveBeenCalledWith("systemctl", ["--user", "daemon-reload"]);
-  expect(run).toHaveBeenLastCalledWith("systemctl", ["--user", "enable", "--now", "factory-cc-bridge.service"]);
+  expect(run).toHaveBeenLastCalledWith("systemctl", ["--user", "enable", "--now", "dswap-bridge.service"]);
   const settings = JSON.parse(readFileSync(paths.settings, "utf8"));
   expect(settings.customModels.map((model: { model: string }) => model.model)).toEqual(["sonnet", "acct:auto:sonnet"]);
   expect(settings.customModels[1].displayName).toBe("Claude Code · Sonnet (fixture-sonnet) · auto");
@@ -354,7 +354,7 @@ it("installs a systemd user service on Linux with Droid's prompt; account copies
   const restarted = readFileSync(paths.plist, "utf8");
   expect(restarted).not.toContain("BRIDGE_ACCOUNTS"); expect(restarted).toContain('Environment="BRIDGE_PROMPT=claude-code"');
   await desktop(["uninstall"], linux);
-  expect(run).toHaveBeenLastCalledWith("systemctl", ["--user", "disable", "--now", "factory-cc-bridge.service"]);
+  expect(run).toHaveBeenLastCalledWith("systemctl", ["--user", "disable", "--now", "dswap-bridge.service"]);
   expect(existsSync(paths.plist)).toBe(false); expect(existsSync(paths.state)).toBe(false);
 });
 
@@ -366,4 +366,38 @@ it("adds no account copies on Linux unless --accounts asks for them", async () =
   await desktop(["install"], linux);
   expect(readFileSync(paths.plist, "utf8")).not.toContain("BRIDGE_ACCOUNTS");
   expect(JSON.parse(readFileSync(paths.settings, "utf8")).customModels.map((model: { model: string }) => model.model)).toEqual(["sonnet"]);
+});
+
+it("migrates a pre-rename factory-cc installation on restart and leaves symlinks behind", async () => {
+  const { deps, run } = fixture();
+  run.mockImplementation((command) => ({ status: 0, ...(command === "cswap" ? { stdout: JSON.stringify({ accounts: [] }) } : {}) }));
+  const linux = { ...deps, platform: "linux" };
+  const paths = desktopPaths(deps.home, "linux");
+  await desktop(["install", "--port", "19878"], linux);
+  // Recreate the old layout: state, unit, Droid-side files and account homes under the old names.
+  renameSync(paths.state, paths.legacyState);
+  renameSync(paths.plist, paths.legacyPlist);
+  renameSync(`${paths.settings}.dswap.models.json`, `${paths.settings}.relay-bridge.models.json`);
+  renameSync(`${paths.settings}.dswap.bak.absent`, `${paths.settings}.relay-bridge.bak.absent`);
+  const legacyAccounts = join(deps.home, ".local/share/factory-cc-accounts");
+  mkdirSync(join(legacyAccounts, "codex/default"), { recursive: true });
+  writeFileSync(join(legacyAccounts, "codex/default/marker"), "login");
+  expect(await desktop(["status"], linux)).toMatchObject({ migrationPending: true });
+  await expect(desktop(["install"], linux)).rejects.toThrow(/before the rename/);
+
+  const result = await desktop(["restart"], linux);
+  expect(result.migratedFrom).toEqual([paths.legacyState, paths.legacyPlist]);
+  expect(run).toHaveBeenCalledWith("systemctl", ["--user", "disable", "--now", "factory-cc-bridge.service"]);
+  expect(run).toHaveBeenLastCalledWith("systemctl", ["--user", "enable", "--now", "dswap-bridge.service"]);
+  expect(lstatSync(paths.state).isDirectory()).toBe(true);
+  expect(lstatSync(paths.legacyState).isSymbolicLink()).toBe(true);
+  expect(realpathSync(paths.legacyState)).toBe(realpathSync(paths.state));
+  expect(existsSync(paths.legacyPlist)).toBe(false);
+  expect(readFileSync(paths.plist, "utf8")).toContain(join(paths.state, "bridge-launcher.sh"));
+  expect(existsSync(`${paths.settings}.dswap.models.json`)).toBe(true);
+  expect(existsSync(`${paths.settings}.relay-bridge.models.json`)).toBe(false);
+  expect(readFileSync(join(deps.home, ".local/share/dswap-accounts/codex/default/marker"), "utf8")).toBe("login");
+  expect(lstatSync(legacyAccounts).isSymbolicLink()).toBe(true);
+  // Already migrated: a second restart moves nothing.
+  expect((await desktop(["restart"], linux)).migratedFrom).toBeUndefined();
 });

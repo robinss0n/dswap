@@ -15,10 +15,14 @@ import { CURSOR_LOGIN_COMMAND, cursorApiKey, cursorCredentialStatus, cursorExpir
 import { cursorLoginFromSdk, loadCursorSdk, type CursorPlatformModule } from "../src/runtime/cursor/sdk-load.js";
 import { assertClaudeCredential, claudeConfigModels, readClaudeConfig, withClaudeUpstream } from "../src/upstream/claude-config.js";
 import { configureDroid, DIRECT_BASE_MODELS } from "./configure-droid.js";
+import { migrateSettingsSidecars, moveLegacyFolder, settingsSidecars, stateRoot } from "../src/names.js";
 
-const LABEL = "ai.factory-cc.bridge";
+const LABEL = "ai.dswap.bridge";
 /** Linux runs the same launcher as a systemd user service. */
-const UNIT = "factory-cc-bridge.service";
+const UNIT = "dswap-bridge.service";
+/** Service names from before the rename; `restart` migrates them. */
+const LEGACY_LABEL = "ai.factory-cc.bridge";
+const LEGACY_UNIT = "factory-cc-bridge.service";
 const installationSchema = z.object({ version: z.literal(1), port: z.number().int().min(1).max(65535), repo: z.string(), node: z.string(), path: z.string(),
   // Explicit Droid menu models; absent means follow the Claude Code settings aliases.
   models: z.array(z.string()).optional(),
@@ -65,8 +69,10 @@ export interface DesktopDependencies {
 /** `plist` is the service definition: a LaunchAgent plist on macOS, a systemd user unit on Linux. */
 export function desktopPaths(home: string, platform = "darwin") {
   const linux = platform === "linux";
-  const state = linux ? join(home, ".local/state/factory-cc") : join(home, "Library/Application Support/factory-cc");
-  return { state, data: join(state, "bridge-data"), token: join(state, "client-token"),
+  const { current: state, legacy: legacyState } = stateRoot(home, platform);
+  return { state, legacyState,
+    legacyPlist: linux ? join(home, ".config/systemd/user", LEGACY_UNIT) : join(home, `Library/LaunchAgents/${LEGACY_LABEL}.plist`),
+    data: join(state, "bridge-data"), token: join(state, "client-token"),
     admin: join(state, "admin-token"), hook: join(state, "hook-token"),
     manifest: join(state, "installation.json"), models: join(state, "models.env"),
     cursorCatalog: join(state, "cursor-catalog.json"), cursorMenu: join(state, "cursor-menu.json"),
@@ -126,7 +132,7 @@ const unitQuote = (value: string): string => `"${value.replaceAll("\\", "\\\\").
 export function desktopUnit(deps: DesktopDependencies, install: Installation): string {
   const paths = desktopPaths(deps.home, deps.platform);
   return `[Unit]
-Description=factory-cc Bridge (Droid -> Claude Code)
+Description=dswap bridge (Droid -> Claude Code and Codex)
 
 [Service]
 ExecStart=/bin/sh ${unitQuote(join(paths.state, "bridge-launcher.sh"))}
@@ -183,6 +189,34 @@ function bootout(deps: DesktopDependencies) {
   const result = deps.run("launchctl", ["bootout", `gui/${deps.uid}/${LABEL}`]);
   // launchctl reports ESRCH (3) when the service is already absent.
   if (result.status !== 0 && result.status !== 3) throw new Error(`launchctl bootout failed (exit ${result.status}); installation was preserved.`);
+}
+function legacyInstallPending(deps: DesktopDependencies): boolean {
+  const paths = desktopPaths(deps.home, deps.platform);
+  try { return !lstatSync(paths.legacyState).isSymbolicLink() && !existsSync(paths.state); } catch { return false; }
+}
+/**
+ * Installations from before the rename (factory-cc) move once: stop the old service,
+ * move its state, account and runtime folders to their dswap names (old paths become
+ * symlinks), drop the old service definition and rename Droid-side settings files.
+ * `restart` then writes and starts the dswap service from the moved state.
+ */
+function migrateLegacyInstall(deps: DesktopDependencies): string[] {
+  if (!legacyInstallPending(deps)) return [];
+  const paths = desktopPaths(deps.home, deps.platform);
+  if (deps.platform === "linux") {
+    const result = deps.run("systemctl", ["--user", "disable", "--now", LEGACY_UNIT]);
+    if (result.status !== 0 && result.status !== 1 && result.status !== 5) throw new Error(`systemctl disable ${LEGACY_UNIT} failed (exit ${result.status}); nothing was moved.`);
+  } else {
+    const result = deps.run("launchctl", ["bootout", `gui/${deps.uid}/${LEGACY_LABEL}`]);
+    if (result.status !== 0 && result.status !== 3) throw new Error(`launchctl bootout failed (exit ${result.status}); nothing was moved.`);
+  }
+  moveLegacyFolder(paths.state, paths.legacyState);
+  const share = join(deps.home, ".local/share");
+  for (const name of ["accounts", "runtimes"]) moveLegacyFolder(join(share, `dswap-${name}`), join(share, `factory-cc-${name}`));
+  rmSync(paths.legacyPlist, { force: true });
+  if (deps.platform === "linux") deps.run("systemctl", ["--user", "daemon-reload"]);
+  migrateSettingsSidecars(paths.settings);
+  return [paths.legacyState, paths.legacyPlist];
 }
 async function bootstrap(deps: DesktopDependencies, plist: string) {
   if (deps.platform === "linux") {
@@ -392,6 +426,9 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
   const paths = desktopPaths(deps.home, deps.platform), domain = `gui/${deps.uid}`;
   const caveat = "The service waits with backoff while /Volumes/Workspace is unmounted or required files are unavailable. Node and the repository must return at their installed paths.";
   if (action === "status") {
+    if (legacyInstallPending(deps)) {
+      return { installed: true, migrationPending: true, message: `Installed under the old name (${paths.legacyState}). Run npm run desktop -- restart to move it to ${paths.state} and start ${deps.platform === "linux" ? UNIT : LABEL}.` };
+    }
     const install = readInstallation(deps);
     const loaded = deps.platform === "linux"
       ? deps.run("systemctl", ["--user", "is-active", "--quiet", UNIT]).status === 0
@@ -411,7 +448,7 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
         expires: cursorStatus.expiresAt ?? (cursorStatus.source === "env" ? "unknown" : "none"),
         account: cursorStatus.accountPresent ? "present" : "absent",
       },
-      ...(scriptBases.length ? { warning: `Droid now runs ${scriptBases.join(", ")} in Script mode, so entries meant for direct tools on that base now get Script mode instead. Update factory-cc to a base model outside script_tool_models.` } : {}),
+      ...(scriptBases.length ? { warning: `Droid now runs ${scriptBases.join(", ")} in Script mode, so entries meant for direct tools on that base now get Script mode instead. Update dswap to a base model outside script_tool_models.` } : {}),
       ...(cursorWarning ? { cursorWarning } : {}) };
   }
   if (action === "uninstall") {
@@ -421,12 +458,13 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     }
     readInstallation(deps);
     bootout(deps);
-    if (existsSync(`${paths.settings}.relay-bridge.models.json`)) configureDroid(["--settings", paths.settings, "--revert"], { HOME: deps.home });
+    if (existsSync(settingsSidecars(paths.settings).metadata)) configureDroid(["--settings", paths.settings, "--revert"], { HOME: deps.home });
     rmSync(paths.plist, { force: true });
     rmSync(paths.state, { recursive: true });
-    return { installed: false, changed: [paths.settings, `${paths.settings}.relay-bridge.bak`, `${paths.settings}.relay-bridge.bak.absent`, `${paths.settings}.relay-bridge.models.json`, paths.plist, paths.state] };
+    return { installed: false, changed: [paths.settings, settingsSidecars(paths.settings).backup, settingsSidecars(paths.settings).absent, settingsSidecars(paths.settings).metadata, paths.plist, paths.state] };
   }
   if (action === "restart") {
+    const migrated = migrateLegacyInstall(deps);
     const previous = readInstallation(deps);
     const explicit = parsed.cursorModels !== undefined;
     let menu: BridgeModel[] | undefined;
@@ -447,7 +485,8 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
       menu = readCursorMenuFile(deps);
       cursorModels = menu ? previous.cursorModels : undefined;
     } else cursorModels = undefined;
-    const install: Installation = { ...previous, node: realpathSync(deps.node), ...(parsed.models ? { models: parsed.models } : {}),
+    // The service runs the checkout `restart` was started from, so a moved or renamed repository follows.
+    const install: Installation = { ...previous, repo: realpathSync(deps.repo), node: realpathSync(deps.node), ...(parsed.models ? { models: parsed.models } : {}),
       ...(parsed.claudeConfigDir ? { claudeConfigDir: parsed.claudeConfigDir } : {}),
       ...(parsed.accounts ? { accounts: parsed.accounts } : {}), ...(parsed.prompt ? { prompt: parsed.prompt } : {}),
       ...(parsed.remoteWorkspace !== undefined ? { remoteWorkspace: parsed.remoteWorkspace } : {}),
@@ -472,11 +511,12 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     replacePrivateFile(paths.plist, desktopPlist(deps, install));
     bootout(deps);
     await bootstrap(deps, paths.plist);
-    return { restarted: true, changed: [paths.settings, `${paths.settings}.relay-bridge.models.json`, paths.models, paths.manifest, paths.plist], models: install.models ?? "follow Claude Code settings", ...(install.cursorModels ? { cursorModels: install.cursorModels } : {}), ...(warning ? { warning } : {}), caveat };
+    return { restarted: true, ...(migrated.length ? { migratedFrom: migrated } : {}), changed: [paths.settings, settingsSidecars(paths.settings).metadata, paths.models, paths.manifest, paths.plist], models: install.models ?? "follow Claude Code settings", ...(install.cursorModels ? { cursorModels: install.cursorModels } : {}), ...(warning ? { warning } : {}), caveat };
   }
+  if (legacyInstallPending(deps)) throw new Error("An installation from before the rename exists. Run npm run desktop -- restart to migrate it instead of installing again.");
   const port = parsed.port ?? 18787;
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be 1..65535.");
-  if (!cursorPreinstallOnly(paths.state) || existsSync(paths.plist) || existsSync(`${paths.settings}.relay-bridge.models.json`) || existsSync(`${paths.settings}.relay-bridge.bak`) || existsSync(`${paths.settings}.relay-bridge.bak.absent`)) throw new Error("Existing desktop or managed-model state found. Use status/restart, or revert the previous configure-droid installation first.");
+  if (!cursorPreinstallOnly(paths.state) || existsSync(paths.plist) || existsSync(settingsSidecars(paths.settings).metadata) || existsSync(settingsSidecars(paths.settings).backup) || existsSync(settingsSidecars(paths.settings).absent)) throw new Error("Existing desktop or managed-model state found. Use status/restart, or revert the previous configure-droid installation first.");
   const cursor: { menu?: BridgeModel[]; warning?: string; catalog?: readonly CursorCatalogItem[] } = parsed.cursorModels
     ? await resolveCursorMenu(deps, parsed.cursorModels)
     : cursorLoggedIn(deps) ? {} : { warning: cursorAbsentNotice() };
@@ -510,10 +550,10 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     await bootstrap(deps, paths.plist);
     return { installed: true, port, changed: [paths.state, paths.data, paths.token, paths.admin, paths.hook,
       join(paths.state, "stdout.log"), join(paths.state, "stderr.log"), paths.manifest, paths.models, paths.settings,
-      result.backup && existsSync(String(result.backup)) ? result.backup : `${paths.settings}.relay-bridge.bak.absent`, result.metadataPath, paths.plist],
+      result.backup && existsSync(String(result.backup)) ? result.backup : settingsSidecars(paths.settings).absent, result.metadataPath, paths.plist],
       uninstall: "npm run desktop -- uninstall", ...(cursor.warning ? { warning: cursor.warning } : {}), caveat };
   } catch (error) {
-    if (configured || existsSync(`${paths.settings}.relay-bridge.models.json`)) configureDroid(["--settings", paths.settings, "--revert"], { HOME: deps.home });
+    if (configured || existsSync(settingsSidecars(paths.settings).metadata)) configureDroid(["--settings", paths.settings, "--revert"], { HOME: deps.home });
     rmSync(paths.plist, { force: true });
     rmSync(paths.state, { recursive: true });
     throw error;

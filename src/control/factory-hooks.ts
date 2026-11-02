@@ -6,7 +6,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const FACTORY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd", "Notification", "Stop", "SubagentStop"] as const;
 const MAX_HOOK_BYTES = 4 * 1024 * 1024;
-const CONFIG_FLAG = "--factory-cc-hook-config";
+const CONFIG_FLAG = "--dswap-hook-config";
+/** Hooks installed before the rename still pass the old flag. */
+const LEGACY_CONFIG_FLAG = "--factory-cc-hook-config";
 
 type JsonObject = Record<string, unknown>;
 interface HookConfig { url: string; hookToken?: string; command?: string }
@@ -195,7 +197,7 @@ export async function factoryHookMain(argv = process.argv.slice(2), env: NodeJS.
   // run-droid / local carries the launch ID; any other session must send nothing to the bridge.
   const launchId = env.BRIDGE_FACTORY_LAUNCH_ID;
   if (!launchId?.trim()) return;
-  const index = argv.indexOf(CONFIG_FLAG);
+  const index = argv.indexOf(CONFIG_FLAG) >= 0 ? argv.indexOf(CONFIG_FLAG) : argv.indexOf(LEGACY_CONFIG_FLAG);
   const path = index < 0 ? undefined : argv[index + 1];
   if (!path || !isAbsolute(path)) throw new Error("Factory hook requires an absolute private configuration path");
   const config = readConfig(path);

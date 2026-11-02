@@ -11,7 +11,7 @@ export function statusPageHtml(opts: {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Relay Bridge</title>
+  <title>dswap bridge</title>
   <style>
     :root { color-scheme: dark; --bg:#0f1419; --card:#1a222b; --ink:#e8eef4; --muted:#93a1b1; --ok:#3dd68c; --warn:#f5c16c; --line:#2a3542; }
     * { box-sizing: border-box; }
@@ -33,7 +33,7 @@ export function statusPageHtml(opts: {
 </head>
 <body>
   <main>
-    <h1>Relay Bridge</h1>
+    <h1>dswap bridge</h1>
     <p><a href="/control">打开原生工具审批与会话控制</a></p>
     <p>本机 Anthropic Messages 兼容入口，按 T3 Code 方式接入官方 Claude Agent SDK：<code>systemPrompt</code> 用 <code>claude_code</code> 预设再追加 Droid 说明；Claude Code 自己执行 Read/Edit/Bash；只有 Mission 等 Droid 专有工具走 MCP。默认 <code>byok</code>。另外可选 <code>subscription</code>、<code>anthropic-api</code>、<code>cloud</code>、<code>inherit</code>。声明的模式和实际环境不一致时，Bridge 会直接拒绝启动。</p>
     <div class="grid">

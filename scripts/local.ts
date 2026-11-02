@@ -13,6 +13,7 @@ import { createBridgeApp, listen, type BridgeApp } from "../src/http/app.js";
 import { createLogger } from "../src/logging.js";
 import { modelsFromIds, parseModelIds, withAccounts } from "../src/models.js";
 import { configureDroid } from "./configure-droid.js";
+import { settingsSidecars } from "../src/names.js";
 import { installDroidCommand } from "./generate-droid.js";
 import { runDroid } from "./run-droid.js";
 
@@ -318,7 +319,7 @@ export async function runLocal(argv: string[], env: NodeJS.ProcessEnv = process.
     try { writeFileSync(lock, `${JSON.stringify({ pid: process.pid, startedAt: processStartTime(process.pid) })}\n`); } finally { closeSync(lock); }
     directory(join(home, ".factory"), true, true);
     directory(join(state, "bridge-data"), true, true);
-    for (const path of [settingsPath, `${settingsPath}.relay-bridge.bak`, `${settingsPath}.relay-bridge.bak.absent`, `${settingsPath}.relay-bridge.models.json`, hooksPath, hookConfig, adminPath, join(state, "manifest.env")]) regularFile(path);
+    for (const path of [settingsPath, ...Object.values(settingsSidecars(settingsPath).legacy), settingsSidecars(settingsPath).backup, settingsSidecars(settingsPath).absent, settingsSidecars(settingsPath).metadata, hooksPath, hookConfig, adminPath, join(state, "manifest.env")]) regularFile(path);
     installDroidCommand(project);
     if (args.auth === "byok") setEnv(runtimeKey, key);
     setEnv("BRIDGE_DROID_HOME", home); setEnv("BRIDGE_SDK_CWD", project); setEnv("BRIDGE_WAIT_FOR_MISSION_DIR", undefined);

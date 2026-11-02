@@ -30,7 +30,7 @@ export function spawnToolInput(tool: ToolDefinition, userText: string): Record<s
   }
   if (tool.name === "ProposeMission") {
     return {
-      title: "Relay Bridge mission",
+      title: "dswap mission",
       proposal: userText.slice(0, 4000) || "Implement the requested mission and keep scrutiny plus user-testing enabled.",
     };
   }
@@ -180,7 +180,7 @@ export function orchestratorAppendix(role: RoleTag, tools: ToolDefinition[] | un
     .map((tool) => tool.name)
     .filter((name) => name === "StartMissionRun" || name === "ProposeMission" || name === "DismissHandoffItems");
   return [
-    "You are the Droid Mission orchestrator talking through Relay Bridge.",
+    "You are the Droid Mission orchestrator talking through the dswap bridge.",
     "Follow the current Droid host context, activated skills, and user instructions for the Mission workflow, required artifacts, and approval gates.",
     "Use the current mission directory supplied in that context or an explicit workspace binding. If it is missing or conflicting, report the missing context instead of choosing another mission.",
     `Advertised Factory Mission controls: ${names.join(", ")}.`,

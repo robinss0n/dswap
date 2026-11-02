@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { runtimesRoot } from "../names.js";
 import { spawnSync } from "node:child_process";
 
 /**
@@ -13,7 +14,7 @@ import { spawnSync } from "node:child_process";
 export const CSWAP_VERSION = "0.26.0";
 
 export function cswapRuntimeDir(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.HOME ?? homedir(), ".local/share/factory-cc-runtimes/cswap");
+  return join(runtimesRoot(env), "cswap");
 }
 
 export function privateCswap(env: NodeJS.ProcessEnv = process.env): string {

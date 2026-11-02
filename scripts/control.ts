@@ -44,7 +44,7 @@ export async function runControl(args: string[], env: NodeJS.ProcessEnv = proces
       if (input === null || typeof input !== "object" || Array.isArray(input)) throw new Error("--input must contain a JSON object; no approval was sent.");
       body.updatedInput = input;
     }
-    if (command === "deny") body.message = value ?? "User denied this request through Relay Bridge CLI.";
+    if (command === "deny") body.message = value ?? "User denied this request through the dswap control CLI.";
   } else if (command === "cancel") {
     if (!id || id.startsWith("-") || args.length !== 2) throw new Error("cancel requires exactly one session ID. Use --help.");
     path = "/internal/cancel";

@@ -69,7 +69,7 @@ export function createLogger(logDir: string): Logger {
       data: data ? redactJson(data) : undefined,
     });
     appendLogLine(file, line);
-    const prefix = `[relay-bridge ${level}] ${event}`;
+    const prefix = `[dswap ${level}] ${event}`;
     if (level === "error") console.error(prefix, data ? redactJson(data) : "");
     else if (level === "warn") console.warn(prefix, data ? redactJson(data) : "");
     else console.log(prefix);

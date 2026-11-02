@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { droidModelId, modelsFromIds, parseModelIds, validateModels, type BridgeModel } from "../src/models.js";
 import { AUTH_MODES, type AuthMode } from "../src/upstream/auth-env.js";
 import { controlBaseUrl } from "./control.js";
+import { migrateSettingsSidecars, settingsSidecars } from "../src/names.js";
 
 interface CustomModel extends Record<string, unknown> { model: string; displayName?: string }
 interface ManagedModel { id: string; signature: string }
@@ -219,8 +220,11 @@ export function configureDroid(argv: string[], env: NodeJS.ProcessEnv = process.
   const args = parseArgs(argv);
   if (args.help === "1") return { help };
   const settingsPath = args.settings ?? join(args.home ?? env.HOME ?? ".", ".factory/settings.json");
-  const backup = `${settingsPath}.relay-bridge.bak`, absentMarker = `${backup}.absent`;
-  const metadataPath = `${settingsPath}.relay-bridge.models.json`;
+  // Installs from before the rename keep their backup and ownership under the old names.
+  migrateSettingsSidecars(settingsPath);
+  const sidecars = settingsSidecars(settingsPath);
+  const backup = sidecars.backup, absentMarker = sidecars.absent;
+  const metadataPath = sidecars.metadata;
   if (args.revert === "1") {
     return revertDroid(settingsPath, backup, absentMarker, metadataPath);
   }
