@@ -1,4 +1,4 @@
-import { DESKTOP_DISALLOWED_TOOLS, DESKTOP_APPROVAL_DENIAL, DESKTOP_READ_DENIAL } from "./desktop-policy.js";
+import { DESKTOP_DISALLOWED_TOOLS, DESKTOP_APPROVAL_DENIAL, DESKTOP_READ_DENIAL, REMOTE_NATIVE_DENIAL } from "./desktop-policy.js";
 import { mkdirSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, join } from "node:path";
@@ -251,7 +251,8 @@ export class SdkRuntime implements BridgeRuntime {
         upstreamOrigin: this.config.claudeConfig.env.ANTHROPIC_BASE_URL ? new URL(this.config.claudeConfig.env.ANTHROPIC_BASE_URL).origin : "https://api.anthropic.com",
       } } : {}),
       prompt: describePromptLayout(this.config.promptMode),
-      tools: this.config.promptMode === "droid" ? "no native tools; every Droid tool through MCP" : "preset:claude_code + droid-exclusive MCP",
+      tools: this.config.promptMode === "droid" ? "no native tools; every Droid tool through MCP"
+        : this.config.remoteWorkspace ? "preset:claude_code listed but always denied (remote workspace); every Droid tool through MCP" : "preset:claude_code + droid-exclusive MCP",
       compaction: this.config.upstreamCompaction === "upstream" ? "Claude Code auto-compaction on" : "Droid only (Claude Code auto-compaction off)",
       contextPolicy: Object.fromEntries(this.contextPolicies),
       input: "persistent SDK streaming input", includePartialMessages: true,
@@ -367,6 +368,7 @@ export class SdkRuntime implements BridgeRuntime {
 
   async handle(input: RuntimeRequest, sink?: StreamSink): Promise<RuntimeTurn> {
     if (this.config.promptMode === "droid") input = { ...input, droidPrompt: true };
+    else if (this.config.remoteWorkspace) input = { ...input, remoteWorkspace: true };
     const preparationStarted = Date.now();
     if (this.closing) throw new BridgeError(503, "bridge_shutting_down", "Bridge is shutting down");
     // Resolve before allocating or changing a native session. A catalog typo or
@@ -778,10 +780,15 @@ export class SdkRuntime implements BridgeRuntime {
     });
   }
 
+  /** No native tool runs in Droid prompt mode or for a remote workspace, so Droid must expose its own. */
+  private allDroidTools(): boolean {
+    return this.config.promptMode === "droid" || this.config.remoteWorkspace === true;
+  }
+
   private async updateCatalog(live: LiveSdk, input: RuntimeRequest): Promise<void> {
     const started = Date.now();
     if (!live.catalog) throw new BridgeError(503, "dynamic_tools_unavailable", "The live SDK session has no mutable Droid MCP catalog");
-    if (await live.catalog.update(selectDroidMcpTools(input.request.tools, this.config.desktopProfile, this.config.promptMode === "droid"))) {
+    if (await live.catalog.update(selectDroidMcpTools(input.request.tools, this.config.desktopProfile, this.allDroidTools()))) {
       await this.waitForCatalogVisibility(live);
       live.events.push({ at: now(), type: "droid_catalog_updated", data: {
         tools: live.catalog.definitions().map((tool) => tool.name), visibility: "cli_tool_names_confirmed", schemaVisibility: "revision_name_confirmed",
@@ -904,7 +911,7 @@ export class SdkRuntime implements BridgeRuntime {
     const selection = route ? route.selection : await this.ensureSelection();
     if (selection) this.selection = selection;
     if (live.terminal) throw live.terminal;
-    const droidTools = input.request.tools !== undefined ? selectDroidMcpTools(input.request.tools, this.config.desktopProfile, this.config.promptMode === "droid") : live.catalog?.definitions() ?? [];
+    const droidTools = input.request.tools !== undefined ? selectDroidMcpTools(input.request.tools, this.config.desktopProfile, this.allDroidTools()) : live.catalog?.definitions() ?? [];
     const names = live.names ?? new StableDroidToolNames();
     live.names = names;
     live.policyKey = queryPolicy(input, this.config);
@@ -998,7 +1005,7 @@ export class SdkRuntime implements BridgeRuntime {
       allowedTools: ["mcp__droid__*"],
       env, permissionMode: this.config.desktopProfile || this.config.permissionMode === "ask" ? "default" : "bypassPermissions",
       allowDangerouslySkipPermissions: !this.config.desktopProfile && this.config.permissionMode !== "ask", abortController: abort,
-      systemPrompt: this.config.promptMode === "droid" ? buildDroidSystemPrompt(input, this.config.remoteWorkspace) : buildPresetSystemPrompt(this.config.desktopProfile),
+      systemPrompt: this.config.promptMode === "droid" ? buildDroidSystemPrompt(input, this.config.remoteWorkspace) : buildPresetSystemPrompt(this.config.desktopProfile, this.config.remoteWorkspace),
       canUseTool: async (name: string, toolInput: Record<string, unknown>, context?: NativePermissionContext) => live.queryEpoch === epoch
         ? this.canUseTool(live, name, toolInput, context)
         : { behavior: "deny", message: "This native query has been retired." },
@@ -1037,6 +1044,11 @@ export class SdkRuntime implements BridgeRuntime {
           const cancelled = live.turnHandoff.reason === "cancelled";
           live.events.push({ at: now(), type: cancelled ? "cancelled_turn_tool_denied" : "steering_turn_tool_denied", data: { toolName: hook.tool_name, toolUseId: hook.tool_use_id } });
           return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: cancelled ? CANCELLED_TURN_DENIAL : STEERING_TURN_DENIAL } };
+        }
+        if (this.config.remoteWorkspace && hook.tool_name && !isDroidMcpName(hook.tool_name)) {
+          live.events.push({ at: now(), type: "remote_native_tool_denied", data: { toolName: hook.tool_name, toolUseId: hook.tool_use_id } });
+          this.logger.info("remote_native_tool_denied", { sessionId: input.session.bridgeSessionId, toolName: hook.tool_name });
+          return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: REMOTE_NATIVE_DENIAL } };
         }
         if (this.config.desktopProfile && hook.tool_name && !hook.tool_name.startsWith("mcp__droid__") && !["Read", "Glob", "Grep", "LS"].includes(hook.tool_name)) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: DESKTOP_APPROVAL_DENIAL } };
         const denial = prefetched ? undefined : toolAccessDenial(live, hook.tool_name, this.control?.factoryPermissionMode?.(input.session.bridgeSessionId));
@@ -1198,6 +1210,7 @@ export class SdkRuntime implements BridgeRuntime {
   }
 
   private async canUseTool(live: LiveSdk, name: string, input: Record<string, unknown>, context: NativePermissionContext = {}): Promise<RuntimePermissionDecision> {
+    if (this.config.remoteWorkspace && !isDroidMcpName(name)) return { behavior: "deny", message: REMOTE_NATIVE_DENIAL };
     if (this.config.desktopProfile) return { behavior: "deny", message: ["Read", "Glob", "Grep", "LS"].includes(name) ? DESKTOP_READ_DENIAL : DESKTOP_APPROVAL_DENIAL };
     if (live.terminal) return { behavior: "deny", message: "Session is closed" };
     const denial = toolAccessDenial(live, name, live.current && this.control?.factoryPermissionMode?.(live.current.session.bridgeSessionId));

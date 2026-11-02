@@ -287,10 +287,6 @@ function googleAccountsFor(install: Installation): string[] {
   const accounts = listGoogleAccounts();
   return accounts.length === 1 ? [accounts[0]!.name] : ["auto"];
 }
-/** Only Droid's prompt runs no provider tools here, so only it may serve a Droid on another machine. */
-function assertRemoteWorkspace(install: Installation): void {
-  if (install.remoteWorkspace && (install.prompt ?? "droid") !== "droid") throw new Error("--remote-workspace on needs --prompt droid.");
-}
 type DesktopOptions = Partial<Pick<Installation, "port" | "models" | "cursorModels" | "claudeConfigDir" | "accounts" | "prompt" | "remoteWorkspace" | "routeModels" | "codexModels" | "codexAccounts" | "googleModels" | "googleAccounts">>;
 function parseOptions(action: string, options: string[]): DesktopOptions {
   const parsed: DesktopOptions = {};
@@ -497,7 +493,6 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     if (install.googleModels?.length === 0) delete install.googleModels;
     if (!install.remoteWorkspace) delete install.remoteWorkspace;
     if (!install.routeModels) delete install.routeModels;
-    assertRemoteWorkspace(install);
     if (install.accounts?.length === 0) delete install.accounts;
     if (cursorModels) install.cursorModels = cursorModels;
     else delete install.cursorModels;
@@ -527,7 +522,6 @@ export async function desktop(argv: string[], deps: DesktopDependencies): Promis
     ...(parsed.googleModels?.length ? { googleModels: parsed.googleModels } : {}), ...(parsed.googleAccounts ? { googleAccounts: parsed.googleAccounts } : {}) };
   // Account copies are opt-in: with `dswap auto on`, the plain entries follow cswap's switches in place.
   if (parsed.accounts?.length) install.accounts = parsed.accounts;
-  assertRemoteWorkspace(install);
   assertClaudeCredential(readDesktopClaudeConfig(deps, install));
   checkedRun(deps, deps.node, [join(deps.repo, "node_modules/typescript/bin/tsc"), "-p", join(deps.repo, "tsconfig.build.json")]);
   if (!existsSync(join(install.repo, "dist/index.js"))) throw new Error("Missing built dist/index.js. Run npm run build.");

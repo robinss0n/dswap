@@ -39,11 +39,16 @@ export interface PresetSystemPrompt {
   append: string;
 }
 
-export function buildPresetSystemPrompt(desktopProfile = false): PresetSystemPrompt {
+/** Preset mode with a remote workspace: Claude Code's own tools would act on the wrong machine. */
+export const PRESET_REMOTE_WORKSPACE_NOTE = "Remote workspace: Droid, the project and all of its tools are on another machine. Every Claude Code built-in tool runs on this model server instead and is always denied; do not call them. Use only the advertised mcp__droid__ tools, including for reading files. The primary working directory in Claude Code's environment section is an empty placeholder on the model server, so never use or mention it; the project is the folder in Droid's environment reminder.";
+
+export function buildPresetSystemPrompt(desktopProfile = false, remoteWorkspace = false): PresetSystemPrompt {
   return {
     type: "preset",
     preset: "claude_code",
-    append: STABLE_DROID_APPEND + (desktopProfile ? " Desktop profile: all changes, commands, background jobs, planning approvals and subagents MUST use the advertised mcp__droid__ tools. Droid owns approvals and autonomy, including spec mode. Native tools are read-only and may be denied; never work around that denial." : ""),
+    append: STABLE_DROID_APPEND
+      + (desktopProfile ? " Desktop profile: all changes, commands, background jobs, planning approvals and subagents MUST use the advertised mcp__droid__ tools. Droid owns approvals and autonomy, including spec mode. Native tools are read-only and may be denied; never work around that denial." : "")
+      + (remoteWorkspace ? ` ${PRESET_REMOTE_WORKSPACE_NOTE}` : ""),
   };
 }
 
@@ -80,7 +85,7 @@ export function buildHostContext(input: RuntimeRequest, cwd?: string): string {
     ];
   return [
     ...roleContext,
-    `Allowed native tool equivalents for this host request: ${allowedNativeToolNames(input.request, input.factoryPermissionMode).join(", ") || "none"}. All other advertised host tools execute through the current Factory MCP catalog. Native Agent, Task, Skill and unrelated plugin tools do not inherit Factory registry authority.`,
+    `Allowed native tool equivalents for this host request: ${(input.remoteWorkspace ? [] : allowedNativeToolNames(input.request, input.factoryPermissionMode)).join(", ") || "none"}. All other advertised host tools execute through the current Factory MCP catalog. Native Agent, Task, Skill and unrelated plugin tools do not inherit Factory registry authority.`,
     cwd ? buildWorkspaceAppendix(cwd, missionDir) : "",
   ]
     .filter(Boolean)

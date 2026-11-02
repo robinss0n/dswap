@@ -10,6 +10,8 @@ export interface RuntimeRequest {
   factoryPermissionMode?: string;
   /** Set by the SDK runtime in BRIDGE_PROMPT=droid: Droid's prompt is the system prompt and every Droid tool runs in Droid. */
   droidPrompt?: boolean;
+  /** Set by the SDK runtime with a remote workspace: the project is on Droid's machine, so no native tool may run here. */
+  remoteWorkspace?: boolean;
   /** Trusted HTTP retry receipt. Prior results become reference history, never callbacks. */
   recovery?: "cold-import";
   /** Why the HTTP layer chose this session (its match reason), reported back as continuity. */

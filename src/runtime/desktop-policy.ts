@@ -9,5 +9,6 @@ export const DESKTOP_DISALLOWED_TOOLS = [
   "Monitor", "ProposeSkills", "ProposeGoal", "Artifact", "PushNotification",
 ];
 export const DESKTOP_APPROVAL_DENIAL = "Desktop profile: native approvals are disabled. Use the advertised mcp__droid__ tools so Droid applies its current mode and approval UI.";
+export const REMOTE_NATIVE_DENIAL = "Remote workspace: Claude Code built-in tools run on the model server, not on the machine with the project, so they are always denied. Use the advertised mcp__droid__ tools instead.";
 /** A native read needs approval only outside the project; Droid attachment copies live there too. */
 export const DESKTOP_READ_DENIAL = "Desktop profile: this read is outside the project directory and needs an approval native tools cannot get here. Images the user attached are already in the conversation; use them directly. For other files outside the project, use mcp__droid__Execute (for example cat) so Droid applies its current mode and approval UI.";

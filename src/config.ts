@@ -224,8 +224,8 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
   if (desktopProfile && (permissionMode !== "ask" || !isLoopbackHost(host))) throw new Error("Desktop profile requires ask permissions and loopback binding.");
   const promptMode = overrides.promptMode ?? promptModeEnv();
   const remoteWorkspace = overrides.remoteWorkspace ?? env("BRIDGE_REMOTE_WORKSPACE") === "1";
-  if (remoteWorkspace && (!desktopProfile || promptMode !== "droid" || env("BRIDGE_SDK_CWD"))) {
-    throw new Error("BRIDGE_REMOTE_WORKSPACE=1 requires BRIDGE_DESKTOP=1 and BRIDGE_PROMPT=droid, without BRIDGE_SDK_CWD.");
+  if (remoteWorkspace && (!desktopProfile || env("BRIDGE_SDK_CWD"))) {
+    throw new Error("BRIDGE_REMOTE_WORKSPACE=1 requires BRIDGE_DESKTOP=1, without BRIDGE_SDK_CWD.");
   }
   const config: BridgeConfig = {
     desktopProfile,

@@ -33,11 +33,11 @@ it("serves the explicit BRIDGE_MODELS catalog in claude-config mode", () => {
   const config = loadConfig({ dataDir: join(root, "data"), authMode: "claude-config", desktopProfile: true });
   expect(config.models?.map((model) => model.model)).toEqual(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
 });
-it("allows a remote workspace only with the desktop profile and Droid's prompt", () => {
+it("allows a remote workspace only with the desktop profile, in either prompt mode", () => {
   const root = fixture(), dataDir = join(root, "data");
   vi.stubEnv("BRIDGE_SDK_CWD", "");
   expect(loadConfig({ dataDir, authMode: "byok", desktopProfile: true, promptMode: "droid", remoteWorkspace: true }).remoteWorkspace).toBe(true);
-  expect(() => loadConfig({ dataDir, authMode: "byok", desktopProfile: true, promptMode: "claude-code", remoteWorkspace: true })).toThrow("BRIDGE_REMOTE_WORKSPACE");
+  expect(loadConfig({ dataDir, authMode: "byok", desktopProfile: true, promptMode: "claude-code", remoteWorkspace: true }).remoteWorkspace).toBe(true);
   expect(() => loadConfig({ dataDir, authMode: "byok", desktopProfile: false, promptMode: "droid", remoteWorkspace: true })).toThrow("BRIDGE_REMOTE_WORKSPACE");
   vi.stubEnv("BRIDGE_SDK_CWD", root);
   expect(() => loadConfig({ dataDir, authMode: "byok", desktopProfile: true, promptMode: "droid", remoteWorkspace: true })).toThrow("BRIDGE_REMOTE_WORKSPACE");
