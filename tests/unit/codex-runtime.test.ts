@@ -6,7 +6,8 @@ import { loadConfig, type BridgeConfig } from "../../src/config.js";
 import type { Logger } from "../../src/logging.js";
 import { codexModels } from "../../src/models.js";
 import { CodexRpcError, type AppServerOptions, type CodexAppServer } from "../../src/runtime/codex/app-server.js";
-import { CODEX_DEVELOPER_INSTRUCTIONS, CODEX_EXEC_YIELD_MS, CodexRuntime, droidCodexCatalog } from "../../src/runtime/codex/runtime.js";
+import { CODEX_AUTO_COMPACT_OFF, CODEX_DEVELOPER_INSTRUCTIONS, CODEX_EXEC_YIELD_MS, CodexRuntime, droidCodexCatalog } from "../../src/runtime/codex/runtime.js";
+import { responsesUsage } from "../../src/http/responses-stream.js";
 import type { RuntimeRequest } from "../../src/runtime/types.js";
 import type { SessionRecord } from "../../src/sessions/state.js";
 import type { Message, MessagesRequest } from "../../src/types.js";
@@ -795,5 +796,87 @@ describe("droidCodexCatalog", () => {
     // configOverrides tell which path ran.
     const used = (fake.state.options?.configOverrides ?? []).some((item) => item.startsWith("model_catalog_json="));
     expect(alerts).toEqual(used ? [] : ["codex-catalog-default"]);
+  });
+});
+
+describe("CodexRuntime context fidelity", () => {
+  const opening: Message = { role: "user", content: "original question" };
+  async function answered(runtime: CodexRuntime, fake: ReturnType<typeof fakeServer>, request: RuntimeRequest, extra: () => void = () => undefined) {
+    const pending = runtime.handle(request);
+    await tick();
+    extra();
+    fake.notify("item/agentMessage/delta", { itemId: `answer-${fake.state.turnStarts.length}`, delta: "original answer" });
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    return pending;
+  }
+
+  it("raises Codex's auto-compaction limit beyond any window unless the upstream owns compaction", async () => {
+    const fake = fakeServer();
+    await answered(new CodexRuntime(config(), logger, { open: fake.open }), fake, input([opening]));
+    expect(fake.state.threadStart.config.model_auto_compact_token_limit).toBe(CODEX_AUTO_COMPACT_OFF);
+    const upstream = fakeServer();
+    await answered(new CodexRuntime({ ...config(), upstreamCompaction: "upstream" }, logger, { open: upstream.open }), upstream, input([opening]));
+    expect(upstream.state.threadStart.config).not.toHaveProperty("model_auto_compact_token_limit");
+  });
+
+  it("rebuilds the thread from Droid's history after Codex compacted on its own", async () => {
+    const fake = fakeServer();
+    const warn = vi.fn();
+    const runtime = new CodexRuntime(config(), { ...logger, warn }, { open: fake.open });
+    const first = await answered(runtime, fake, input([opening]), () => fake.notify("thread/compacted", { threadId: "thread-1", turnId: "turn-1" }));
+    expect(first.continuity).toEqual({ kind: "new" });
+    expect(warn).toHaveBeenCalledWith("codex_upstream_compacted", { threadId: "thread-1" });
+    const second = await answered(runtime, fake, input([opening, { role: "assistant", content: first.response.content }, { role: "user", content: "next" }]));
+    expect(fake.state.threadStarts).toBe(2);
+    expect(fake.state.threadResumes).toEqual([]);
+    expect(texts(fake.state.turnStarts[1].input)).toContain("original question");
+    expect(second.continuity).toEqual({ kind: "reseeded", reason: "codex-compaction", importedMessages: 2 });
+    expect(second.sdkSessionId).toBe("thread-2");
+  });
+
+  it("maps contextWindowExceeded to Droid's context_length_exceeded", async () => {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const pending = runtime.handle(input([opening]));
+    await tick();
+    fake.notify("turn/completed", { turn: { status: "failed", error: { message: "Your input exceeds the context window of this model.", codexErrorInfo: "contextWindowExceeded" } } });
+    const failure = await pending.catch((error: unknown) => error);
+    expect(failure).toMatchObject({ status: 400, code: "context_length_exceeded", extra: { type: "invalid_request_error" } });
+    expect((failure as Error).message).toMatch(/^prompt is too long/);
+    expect(runtime.isSessionUsable(session.bridgeSessionId)).toBe(false);
+  });
+
+  it("reports each reply's last call once, with reasoning tokens, and never zero after usage was seen", async () => {
+    const fake = fakeServer();
+    const info = vi.fn();
+    const runtime = new CodexRuntime(config(), { ...logger, info }, { open: fake.open });
+    const first = await answered(runtime, fake, input([opening]), () => fake.notify("thread/tokenUsage/updated", {
+      tokenUsage: { last: { inputTokens: 50_000, cachedInputTokens: 48_000, outputTokens: 900, reasoningOutputTokens: 600 }, modelContextWindow: 922_000 },
+    }));
+    expect(first.response.usage).toMatchObject({ input_tokens: 2_000, cache_read_input_tokens: 48_000, output_tokens: 900, reasoning_output_tokens: 600, estimated: false });
+    expect(info).toHaveBeenCalledWith("codex_context_window", expect.objectContaining({ modelContextWindow: 922_000 }));
+    const second = await answered(runtime, fake, input([opening, { role: "assistant", content: first.response.content }, { role: "user", content: "next" }]));
+    expect(second.response.usage).toMatchObject({ input_tokens: 2_000, cache_read_input_tokens: 48_000, output_tokens: 900, estimated: true });
+    expect(responsesUsage(first.response.usage)).toMatchObject({ input_tokens: 50_000, output_tokens_details: { reasoning_tokens: 600 } });
+  });
+
+  it("resumes an idle thread after a bridge restart from its saved record", async () => {
+    const shared = config();
+    const fake = fakeServer();
+    const before = new CodexRuntime(shared, logger, { open: fake.open });
+    const first = await answered(before, fake, input([opening]));
+    await before.close();
+    const saved = JSON.parse(readFileSync(join(shared.dataDir, "codex-resumes.json"), "utf8"));
+    expect(saved.records[session.bridgeSessionId]).toMatchObject({ threadId: "thread-1", account: "default", model: "gpt-6.1-sol" });
+    // Content-free: hashes and tool names only.
+    expect(JSON.stringify(saved)).not.toContain("original");
+
+    const restarted = fakeServer();
+    const after = new CodexRuntime(shared, logger, { open: restarted.open });
+    const next = await answered(after, restarted, input([opening, { role: "assistant", content: first.response.content }, { role: "user", content: "new question" }]));
+    expect(restarted.state.threadResumes).toEqual([expect.objectContaining({ threadId: "thread-1" })]);
+    expect(restarted.state.threadStarts).toBe(0);
+    expect(next.continuity).toMatchObject({ kind: "resumed" });
+    expect(texts(restarted.state.turnStarts[0].input)).not.toContain("original question");
   });
 });

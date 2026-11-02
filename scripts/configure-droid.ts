@@ -167,6 +167,18 @@ function revertDroid(settingsPath: string, backup: string, absentMarker: string,
  * built-in share this direct-tool base.
  */
 export const DROID_BASE_MODEL = "claude-sonnet-5-5";
+/**
+ * Output ceiling written for every route. The old 4096 only made Droid ask for short
+ * replies; the bridge cannot enforce max_tokens through Claude Code or Codex anyway.
+ */
+export const DROID_MAX_OUTPUT_TOKENS = 128_000;
+/**
+ * Upstream context windows measured live, by model the route runs (Codex
+ * thread/tokenUsage modelContextWindow, codex-cli 0.165.0, 2026-11-02). Written as
+ * maxContextLimit so Droid never plans for a larger window than the upstream accepts.
+ * Unmeasured models keep Droid's default.
+ */
+export const MEASURED_CONTEXT_WINDOWS: Readonly<Record<string, number>> = { "gpt-6.1-sol": 475_000 };
 
 /**
  * Claude models that get their own built-in base. Matched on the model the route
@@ -246,7 +258,8 @@ export function configureDroid(argv: string[], env: NodeJS.ProcessEnv = process.
     baseModelId: droidBaseModel(model),
     // Droid's bearer override is Anthropic-only; OpenAI uses bearer authentication natively.
     ...(model.provider === "codex" ? { provider: "openai" } : { provider: "anthropic", authMode: "bearer" }),
-    maxOutputTokens: 4096 }));
+    maxOutputTokens: DROID_MAX_OUTPUT_TOKENS,
+    ...(MEASURED_CONTEXT_WINDOWS[model.upstream ?? model.model] ? { maxContextLimit: MEASURED_CONTEXT_WINDOWS[model.upstream ?? model.model] } : {}) }));
   const combined = [...kept, ...incoming], oldIds = selectionIds(existing), newIds = selectionIds(combined);
   const defaultSelection = newIds[kept.length + configured.findIndex((model) => model.id === defaultId)]!;
   const canonicalForModel = new Map(configured.flatMap((model, index) =>

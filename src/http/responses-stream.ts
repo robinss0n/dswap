@@ -34,7 +34,7 @@ export function responsesUsage(usage: Usage): Record<string, Json> {
     input_tokens: input,
     input_tokens_details: { cached_tokens: cached },
     output_tokens: usage.output_tokens,
-    output_tokens_details: { reasoning_tokens: 0 },
+    output_tokens_details: { reasoning_tokens: usage.reasoning_output_tokens ?? 0 },
     total_tokens: input + usage.output_tokens,
   };
 }

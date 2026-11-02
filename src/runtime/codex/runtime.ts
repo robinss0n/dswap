@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BridgeConfig } from "../../config.js";
 import type { Logger } from "../../logging.js";
 import { assistantMessage } from "../../protocol/messages.js";
-import { canonicalToolUseId, collectToolResults, systemText, textFromBlocks } from "../../protocol/content.js";
+import { asBlocks, canonicalToolUseId, collectToolResults, systemText, textFromBlocks } from "../../protocol/content.js";
 import { codexFromModelId } from "../../models.js";
 import { historyMessageHashes } from "../../sessions/correlate.js";
 import { BridgeError, type ContentBlock, type Json, type MessagesRequest, type ToolDefinition, type Usage } from "../../types.js";
@@ -16,8 +16,10 @@ import { CANCELLED_TOOL_NOTE, CANCELLED_TURN_DENIAL, isUserCancellation } from "
 import { deferredToolDefinitions } from "../cursor/deferred-catalog.js";
 import { hostAllowsAnyTools } from "../native-tool-policy.js";
 import { droidReasoningEffort } from "../reasoning.js";
-import { buildDynamicUserContent, buildInitialUserContent } from "../system-prompt.js";
-import type { BridgeRuntime, RetiredSession, RuntimeControl, RuntimeHostCall, RuntimeHostCompletion, RuntimeHostEnd, RuntimeRequest, RuntimeTurn, StreamSink } from "../types.js";
+import { buildDynamicUserContent, buildInitialUserContent, trailingUserMessages } from "../system-prompt.js";
+import { contextOverflowError, isContextOverflowText } from "../upstream-error.js";
+import { compactedSummaryText } from "../../sessions/compaction.js";
+import type { BridgeRuntime, Continuity, RetiredSession, RuntimeControl, RuntimeHostCall, RuntimeHostCompletion, RuntimeHostEnd, RuntimeRequest, RuntimeTurn, StreamSink } from "../types.js";
 import { CodexAppServer, CodexRpcError, type AppServerOptions } from "./app-server.js";
 import type { FallbackAlerts } from "../../notify.js";
 
@@ -115,7 +117,22 @@ interface LiveCodex {
   cancelledTurn?: string;
   /** The bridge asked Codex to interrupt the running turn; the thread stays usable. */
   interrupting?: boolean;
+  /** Codex compacted this thread itself: it no longer holds what Droid sent. */
+  diverged?: string;
+  /** Why this live replaced a diverged one; its new thread is a deliberate re-seed. */
+  reseedReason?: string;
+  /** The last reply's usage, reported again (estimated) when a reply saw no new call. */
+  lastUsage?: Usage;
+  contextWindow?: number;
+  continuity?: Continuity;
 }
+
+/**
+ * Codex compacts a thread on its own once it passes model_auto_compact_token_limit.
+ * Droid compacts the conversation it owns, so with BRIDGE_UPSTREAM_COMPACTION=off the
+ * limit is set far beyond any context window and Codex never gets there first.
+ */
+export const CODEX_AUTO_COMPACT_OFF = 1_000_000_000_000;
 
 /**
  * Codex's model catalog adds tools no feature flag removes: multi_agent_version
@@ -185,11 +202,58 @@ export class CodexRuntime implements BridgeRuntime {
   private readonly resumes = new Map<string, ResumeRecord>();
   private readonly now: () => number;
   private closing = false;
+  /** Set after shutdown saved the resume records; later changes must not overwrite them. */
+  private resumesFrozen = false;
   /** Accounts that just hit a usage limit, until when `auto` skips them. */
   private readonly limitedUntil = new Map<string, number>();
 
   constructor(private readonly config: BridgeConfig, private readonly logger: Logger, private readonly deps: CodexRuntimeDependencies = {}) {
     this.now = deps.now ?? Date.now;
+    this.loadResumes();
+  }
+
+  /**
+   * Clean idle threads stay resumable across a bridge restart: Codex keeps the thread
+   * on disk, and this file keeps only what thread/resume needs to prove continuity
+   * (thread id, account, model, message hashes, tool names and schema hashes).
+   */
+  private get resumesFile(): string | undefined {
+    return this.config.persistSessions ? join(this.config.dataDir, "codex-resumes.json") : undefined;
+  }
+
+  private loadResumes(): void {
+    const file = this.resumesFile;
+    if (!file || !existsSync(file)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(file, "utf8")) as { records?: Record<string, any> };
+      for (const [sessionId, row] of Object.entries(parsed.records ?? {})) {
+        if (!row || typeof row.threadId !== "string" || typeof row.account !== "string" || typeof row.model !== "string" || !Array.isArray(row.history)) continue;
+        this.resumes.set(sessionId, {
+          threadId: row.threadId, account: row.account, model: row.model, history: row.history.filter((hash: unknown) => typeof hash === "string"),
+          registered: new Map(Array.isArray(row.registered) ? row.registered : []),
+          advertised: new Set(Array.isArray(row.advertised) ? row.advertised : []),
+          schemas: new Map(Array.isArray(row.schemas) ? row.schemas : []),
+        });
+      }
+      if (this.resumes.size) this.logger.info("codex_resumes_loaded", { count: this.resumes.size });
+    } catch {
+      this.logger.warn("codex_resumes_unreadable", { file });
+    }
+  }
+
+  private saveResumes(): void {
+    const file = this.resumesFile;
+    if (!file || this.resumesFrozen) return;
+    const records = Object.fromEntries([...this.resumes].map(([sessionId, record]) => [sessionId, {
+      threadId: record.threadId, account: record.account, model: record.model, history: record.history,
+      registered: [...record.registered], advertised: [...record.advertised], schemas: [...record.schemas],
+    }]));
+    try {
+      writeFileSync(`${file}.tmp`, JSON.stringify({ version: 1, records }), { mode: 0o600 });
+      renameSync(`${file}.tmp`, file);
+    } catch {
+      this.logger.warn("codex_resumes_save_failed", { file });
+    }
   }
 
   setControl(_control: RuntimeControl | undefined): void {
@@ -201,6 +265,8 @@ export class CodexRuntime implements BridgeRuntime {
     return {
       kind: "codex", sessions: lives.length, appServers: lives.filter((live) => live.server).length,
       pendingHostCalls: lives.reduce((sum, live) => sum + live.pending.size + live.orphaned.size, 0),
+      resumableThreads: this.resumes.size,
+      compaction: this.config.upstreamCompaction === "upstream" ? "Codex auto-compaction on" : "Droid only (Codex auto-compaction limit raised)",
     };
   }
 
@@ -245,7 +311,16 @@ export class CodexRuntime implements BridgeRuntime {
       throw new BridgeError(400, "unknown_model", "This Codex model is not on the menu.");
     }
     await this.switchAccountIfNeeded(input.session.bridgeSessionId, route.account);
-    const live = this.live(input.session.bridgeSessionId);
+    let live = this.live(input.session.bridgeSessionId);
+    if (live.diverged && this.config.upstreamCompaction !== "upstream" && this.canReseed(live, input)) {
+      // Codex summarized on its own, so the model no longer sees Droid's history.
+      // At the next new user turn, rebuild the thread from what Droid sent.
+      const reason = live.diverged;
+      this.logger.warn("codex_thread_reseeded", { threadId: live.threadId, reason });
+      await this.cancel(input.session.bridgeSessionId, "upstream-compaction");
+      live = this.live(input.session.bridgeSessionId);
+      live.reseedReason = reason;
+    }
     if (live.busy) throw new BridgeError(409, "session_busy", "This Codex session already has an active request");
     live.busy = true;
     live.sink = sink;
@@ -258,7 +333,9 @@ export class CodexRuntime implements BridgeRuntime {
       // response was cut (a parallel tool call, trailing text) and Droid has not
       // seen it yet. Dropping it left Codex waiting on calls Droid never got.
       const park = this.armPark(live);
+      const hadThread = Boolean(live.server && live.threadId);
       if (!live.turnId) await this.ensureThread(live, input, route);
+      this.noteContinuity(live, input, hadThread);
       const catalogNote = this.updateAdvertised(live, input);
       // Whole history, not just the tail: a Mission pause puts an "[Interrupted]" assistant
       // record between a result and the latest user message. Only calls this thread
@@ -318,7 +395,7 @@ export class CodexRuntime implements BridgeRuntime {
   }
 
   async cancel(sessionId: string, reason: string): Promise<void> {
-    this.resumes.delete(sessionId);
+    if (this.resumes.delete(sessionId)) this.saveResumes();
     const live = this.lives.get(sessionId);
     if (!live) return;
     const error = new BridgeError(499, "cancelled", reason);
@@ -345,8 +422,11 @@ export class CodexRuntime implements BridgeRuntime {
 
   async close(): Promise<void> {
     this.closing = true;
+    // Idle threads become resume records first, so a restarted bridge continues them.
+    await Promise.all([...this.lives.keys()].map((sessionId) => this.retireIdle(sessionId, "bridge shutdown")));
+    this.saveResumes();
+    this.resumesFrozen = true;
     this.resumes.clear();
-    await Promise.all([...this.lives.keys()].map((sessionId) => this.cancel(sessionId, "bridge shutdown")));
   }
 
   private async retireIdle(sessionId: string, reason: string): Promise<boolean> {
@@ -363,9 +443,30 @@ export class CodexRuntime implements BridgeRuntime {
     if (record) {
       this.resumes.set(sessionId, record);
       while (this.resumes.size > 50) this.resumes.delete(this.resumes.keys().next().value!);
+      this.saveResumes();
     }
     await stopping;
     return Boolean(record);
+  }
+
+  /** A new user turn on an idle thread, with nothing a fresh thread would lose. */
+  private canReseed(live: LiveCodex, input: RuntimeRequest): boolean {
+    if (live.busy || live.turnId || live.pending.size || live.orphaned.size || live.lateResults.length || live.blocks.length || input.session.pendingToolIds.length) return false;
+    const latest = input.request.messages.at(-1);
+    return latest?.role === "user" && !asBlocks(latest.content).some((block) => block.type === "tool_result");
+  }
+
+  private noteContinuity(live: LiveCodex, input: RuntimeRequest, hadThread: boolean): void {
+    const imported = input.request.messages.length - trailingUserMessages(input.request.messages).length;
+    const summary = compactedSummaryText(input.request) !== undefined;
+    const reason = live.reseedReason ?? (summary ? "droid-compaction" : input.continuityReason ?? input.recovery);
+    // ensureThread marks a resumed thread as sent; a new thread has seen nothing yet.
+    const continuity: Continuity = hadThread ? { kind: "reused", ...(input.continuityReason ? { reason: input.continuityReason } : {}) }
+      : live.sent ? { kind: "resumed", ...(input.continuityReason ? { reason: input.continuityReason } : {}) }
+        : { kind: summary || live.reseedReason ? "reseeded" : imported > 0 ? "cold-import" : "new", ...(reason ? { reason } : {}), ...(imported > 0 ? { importedMessages: imported } : {}) };
+    live.reseedReason = undefined;
+    live.continuity = continuity;
+    live.sink?.continuity?.(continuity);
   }
 
   private live(sessionId: string): LiveCodex {
@@ -461,6 +562,7 @@ export class CodexRuntime implements BridgeRuntime {
       },
       ...(input.request.responses?.verbosity ? { model_verbosity: input.request.responses.verbosity } : {}),
       web_search: "disabled",
+      ...(this.config.upstreamCompaction !== "upstream" ? { model_auto_compact_token_limit: CODEX_AUTO_COMPACT_OFF } : {}),
       include_permissions_instructions: false, include_environment_context: false,
       // More Codex-harness context Droid already covers or does not use: the
       // collaboration-mode block, apps, the ~/.agents and ~/.codex skill
@@ -469,7 +571,7 @@ export class CodexRuntime implements BridgeRuntime {
       project_doc_max_bytes: 0, skills: { include_instructions: false },
     };
     const resume = this.resumes.get(sessionId);
-    this.resumes.delete(sessionId);
+    if (this.resumes.delete(sessionId)) this.saveResumes();
     const incoming = historyMessageHashes(input.request.messages);
     if (resume && resume.account === account && resume.model === route.model
       && incoming.length > resume.history.length && input.request.messages[resume.history.length]?.role === "user"
@@ -618,7 +720,24 @@ export class CodexRuntime implements BridgeRuntime {
       // Anthropic usage counts cache reads apart from input_tokens.
       if (last) {
         const cached = last.cachedInputTokens ?? 0;
-        live.usage = { input_tokens: Math.max(0, (last.inputTokens ?? 0) - cached), output_tokens: last.outputTokens ?? 0, cache_read_input_tokens: cached, estimated: false };
+        live.usage = {
+          input_tokens: Math.max(0, (last.inputTokens ?? 0) - cached), output_tokens: last.outputTokens ?? 0, cache_read_input_tokens: cached,
+          // A part of outputTokens, as in the Responses API's output_tokens_details.
+          ...(typeof last.reasoningOutputTokens === "number" ? { reasoning_output_tokens: last.reasoningOutputTokens } : {}),
+          estimated: false,
+        };
+      }
+      const window = params?.tokenUsage?.modelContextWindow;
+      if (typeof window === "number" && window > 0 && window !== live.contextWindow) {
+        live.contextWindow = window;
+        this.logger.info("codex_context_window", { threadId: live.threadId, model: live.model, modelContextWindow: window });
+      }
+    } else if (method === "thread/compacted" || (method === "item/completed" && params?.item?.type === "contextCompaction")) {
+      if (this.config.upstreamCompaction === "upstream") {
+        this.logger.info("codex_thread_compacted", { threadId: live.threadId });
+      } else if (!live.diverged) {
+        live.diverged = "codex-compaction";
+        this.logger.warn("codex_upstream_compacted", { threadId: live.threadId });
       }
     } else if (method === "error" && params?.willRetry === false) {
       live.lastError = params?.error;
@@ -671,6 +790,8 @@ export class CodexRuntime implements BridgeRuntime {
       return new BridgeError(429, "rate_limit_error", `${message}${where}`, retry);
     }
     if (code === "serverOverloaded") return new BridgeError(529, "overloaded_error", `${message}${where}`, retry);
+    // Droid compacts and retries on context_length_exceeded; a 502 would be retried unchanged.
+    if (code === "contextWindowExceeded" || (!code && isContextOverflowText(message))) return contextOverflowError(`${message}${where}`);
     if (code === "unauthorized") {
       const home = live.account ? codexAccountHome(live.account) : undefined;
       return new BridgeError(401, "authentication_error", `Codex is not logged in${where}. Log in again: ${home ? `CODEX_HOME=${home} ` : ""}codex login`);
@@ -694,10 +815,17 @@ export class CodexRuntime implements BridgeRuntime {
     const blocks: ContentBlock[] = live.blocks.length ? live.blocks : [{ type: "text", text: "" }];
     // Whatever arrives from here on belongs to the next response.
     live.blocks = [];
+    // Droid reads a reply's usage as one model call's context: report the latest call
+    // once. With no new call, the previous one still describes the context; zero would
+    // blank the context meter.
+    const usage: Usage = live.usage ?? (live.lastUsage ? { ...live.lastUsage, estimated: true } : { input_tokens: 0, output_tokens: 0, estimated: true });
+    if (live.usage) live.lastUsage = live.usage;
+    live.usage = undefined;
     return {
-      response: assistantMessage(input.request.model, blocks, stop, live.usage ?? { input_tokens: 0, output_tokens: 0, estimated: true }),
+      response: assistantMessage(input.request.model, blocks, stop, usage),
       pendingToolIds: [...live.pending.keys()],
       sdkSessionId: live.threadId,
+      ...(live.continuity ? { continuity: live.continuity } : {}),
     };
   }
 
@@ -825,8 +953,9 @@ function modePlaceholder(name: string): ToolDefinition {
   };
 }
 
+/** A hash, so resume records on disk stay small; only equality matters. */
 function schemaKey(tool: ToolDefinition): string {
-  return JSON.stringify(tool.input_schema ?? {});
+  return createHash("sha256").update(JSON.stringify(tool.input_schema ?? {})).digest("hex");
 }
 
 function codexToolSpec(tool: ToolDefinition): Json {
