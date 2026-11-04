@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { asBlocks } from "../protocol/content.js";
 import type { MessagesRequest } from "../types.js";
-import { COMPACTION_SUMMARY } from "../workspace.js";
+import { isCompactionSummary } from "../workspace.js";
 
 /**
  * Droid compacts a conversation in two requests. A tool-free summarizer gets the
  * transcript as text, each tool call written `TOOL_CALL: <name> input=<json>` and
  * followed by its `TOOL_RESULT`. Droid then continues with a first message that
- * starts with COMPACTION_SUMMARY and quotes the summary it received.
+ * starts with one of the isCompactionSummary prefixes and quotes the summary it received.
  */
 
 export interface SummarizedToolCall { name: string; input: unknown }
@@ -44,11 +44,11 @@ export function lastSummarizedToolCall(request: MessagesRequest): SummarizedTool
 export function compactedSummaryText(request: MessagesRequest): string | undefined {
   const first = request.messages.find((message) => message.role === "user");
   const block = first ? asBlocks(first.content)[0] : undefined;
-  return block?.type === "text" && typeof block.text === "string" && block.text.startsWith(COMPACTION_SUMMARY) ? block.text : undefined;
+  return block?.type === "text" && typeof block.text === "string" && isCompactionSummary(block.text) ? block.text : undefined;
 }
 
 /** Where the generated summary body may end and Droid's retained lists begin. */
-const SUMMARY_BODY_ENDS = ["</summary>", "Current TODO List:", "IMPORTANT: This summary was created"];
+const SUMMARY_BODY_ENDS = ["</summary>", "Current TODO List:", "IMPORTANT: This summary was created", "IMPORTANT: You wrote this summary"];
 
 /**
  * Identifies which Droid compaction a conversation continues from. The summary

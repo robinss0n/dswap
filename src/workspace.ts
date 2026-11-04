@@ -23,6 +23,12 @@ export function canonicalWorkspacePath(path: string): string {
 
 /** Droid opens a compacted conversation with this summary, then its environment reminder. */
 export const COMPACTION_SUMMARY = "A previous instance of Droid has summarized the conversation thus far as follows:\n";
+/** Droid 1.3 words a summary of the same session's own history this way instead. */
+export const SELF_COMPACTION_SUMMARY = "You summarized the conversation thus far earlier in this session, as follows:\n";
+
+export function isCompactionSummary(text: string): boolean {
+  return text.startsWith(COMPACTION_SUMMARY) || text.startsWith(SELF_COMPACTION_SUMMARY);
+}
 
 /** The host's latest environment reminder owns cwd. Droid sends it leading the
  * first user message; a model switch moves a fresh one before the new prompt,
@@ -37,7 +43,7 @@ export function droidWorkingDirectory(request: MessagesRequest): string | undefi
     for (const [index, block] of asBlocks(message.content).entries()) {
       if (block.type !== "text" || typeof block.text !== "string") break;
       const text = block.text;
-      if (index === 0 && text.startsWith(COMPACTION_SUMMARY)) continue;
+      if (index === 0 && isCompactionSummary(text)) continue;
       if (!text.startsWith("<system-reminder>\n") || !text.endsWith("</system-reminder>")) break;
       if (!/^<system-reminder>\n\s*User system info [^\n]+\n/.test(text)) continue;
       return /(?:^|\n)% pwd\n([^\n]*)\n/.exec(text)?.[1];

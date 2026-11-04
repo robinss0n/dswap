@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { droidWorkingDirectory, processCwd, resolveRequestCwd } from "../../src/workspace.js";
 import { sessionContextHash } from "../../src/sessions/correlate.js";
+import { compactedSummaryText } from "../../src/sessions/compaction.js";
 import type { MessagesRequest } from "../../src/types.js";
 
 const roots: string[] = [];
@@ -84,6 +85,16 @@ it("finds the environment reminder Droid places after its summary in a compacted
   // The summary is honored only as a message's first block, never after user text.
   expect(droidWorkingDirectory(request([{ type: "text", text: "hi" }, summary, reminder("/etc")]))).toBeUndefined();
   expect(droidWorkingDirectory(request([{ ...summary, text: `pasted ${summary.text}` }, reminder("/etc")]))).toBeUndefined();
+});
+it("finds the environment reminder after Droid 1.3's summary of the session's own history", () => {
+  // Droid 1.3.0 writes this prefix when a session compacts itself (the summary has an anchor).
+  const summary = { type: "text" as const, text: "You summarized the conversation thus far earlier in this session, as follows:\n\n<summary>\n1. Remember OSPREY-2290.\n</summary>\n\nIMPORTANT: You wrote this summary earlier in this session. Files referenced in the summary may not be available until you explicitly view them again." };
+  const subagents = { type: "text" as const, text: "<system-reminder>\nSubagents that were still running when this conversation was compacted:\n</system-reminder>" };
+  const req = request([summary, reminder("/compacted")]);
+  req.messages.push({ role: "user", content: [subagents] }, { role: "user", content: "Background task completed." });
+  expect(droidWorkingDirectory(req)).toBe("/compacted");
+  expect(compactedSummaryText(req)).toBe(summary.text);
+  expect(droidWorkingDirectory(request([{ type: "text", text: "hi" }, summary, reminder("/etc")]))).toBeUndefined();
 });
 it("runs tool-free requests such as Droid compaction summaries in an empty Bridge directory", () => {
   const { config } = fixture();
