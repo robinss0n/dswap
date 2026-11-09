@@ -12,6 +12,8 @@ export interface RuntimeRequest {
   droidPrompt?: boolean;
   /** Set by the SDK runtime with a remote workspace: the project is on Droid's machine, so no native tool may run here. */
   remoteWorkspace?: boolean;
+  /** Set by the SDK runtime in BRIDGE_PROMPT=claude-code for a Droid compaction summary: Droid's summarizer instructions, carried in the preset's append instead of the user message. */
+  summarizerInstructions?: string;
   /** Trusted HTTP retry receipt. Prior results become reference history, never callbacks. */
   recovery?: "cold-import";
   /** Why the HTTP layer chose this session (its match reason), reported back as continuity. */

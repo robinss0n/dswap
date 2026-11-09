@@ -26,7 +26,7 @@ import { CSWAP_LAUNCHER, resolveAccount } from "../upstream/cswap.js";
 import { claudeReasoningKey, claudeReasoningOptions, droidReasoningLevel, liveEffortChange, type ClaudeEffort } from "./reasoning.js";
 import { OwnedProcesses } from "./owned-processes.js";
 import { contextOverflowError, isContextOverflowText, upstreamError } from "./upstream-error.js";
-import { compactedSummaryText } from "../sessions/compaction.js";
+import { compactedSummaryText, droidSummarizerInstructions } from "../sessions/compaction.js";
 import { redactValue } from "../security/redact.js";
 
 type ModelRoute = ReturnType<typeof resolveRequestModel>;
@@ -369,6 +369,10 @@ export class SdkRuntime implements BridgeRuntime {
   async handle(input: RuntimeRequest, sink?: StreamSink): Promise<RuntimeTurn> {
     if (this.config.promptMode === "droid") input = { ...input, droidPrompt: true };
     else if (this.config.remoteWorkspace) input = { ...input, remoteWorkspace: true };
+    if (this.config.promptMode !== "droid") {
+      const summarizerInstructions = droidSummarizerInstructions(input.request);
+      if (summarizerInstructions) input = { ...input, summarizerInstructions };
+    }
     const preparationStarted = Date.now();
     if (this.closing) throw new BridgeError(503, "bridge_shutting_down", "Bridge is shutting down");
     // Resolve before allocating or changing a native session. A catalog typo or
@@ -1005,7 +1009,7 @@ export class SdkRuntime implements BridgeRuntime {
       allowedTools: ["mcp__droid__*"],
       env, permissionMode: this.config.desktopProfile || this.config.permissionMode === "ask" ? "default" : "bypassPermissions",
       allowDangerouslySkipPermissions: !this.config.desktopProfile && this.config.permissionMode !== "ask", abortController: abort,
-      systemPrompt: this.config.promptMode === "droid" ? buildDroidSystemPrompt(input, this.config.remoteWorkspace) : buildPresetSystemPrompt(this.config.desktopProfile, this.config.remoteWorkspace),
+      systemPrompt: this.config.promptMode === "droid" ? buildDroidSystemPrompt(input, this.config.remoteWorkspace) : buildPresetSystemPrompt(this.config.desktopProfile, this.config.remoteWorkspace, input.summarizerInstructions),
       canUseTool: async (name: string, toolInput: Record<string, unknown>, context?: NativePermissionContext) => live.queryEpoch === epoch
         ? this.canUseTool(live, name, toolInput, context)
         : { behavior: "deny", message: "This native query has been retired." },

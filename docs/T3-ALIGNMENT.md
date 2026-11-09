@@ -20,7 +20,7 @@ T3 also has an application event store, projections, command receipts and transa
 | Part | Behavior |
 |---|---|
 | Query lifetime | One streaming-input `query({ prompt: AsyncIterable, options })` per live session. New user turns enter the same input queue; an HTTP response ending does not end the SDK query. |
-| System prompt | Only `{ type: "preset", preset: "claude_code", append: STABLE_DROID_APPEND }`. Prompt recording and dynamic-section handling follow the installed CLI's defaults; the adapter does not explicitly set `snapshot` or `excludeDynamicSections`. |
+| System prompt | Only `{ type: "preset", preset: "claude_code", append: STABLE_DROID_APPEND }`; for a Droid compaction summary request the append also carries Droid's summarizer instructions, as T3 Code's append carries its own runtime instructions. Prompt recording and dynamic-section handling follow the installed CLI's defaults; the adapter does not explicitly set `snapshot` or `excludeDynamicSections`. |
 | Host context | Nonempty Droid system text is preserved as the host's role/skill/workflow instructions in user input, without header-derived role appendices. Workspace context is added separately. Earlier native messages are retained, not rebuilt on each turn. |
 | Native tools | Keep `tools: { type: "preset", preset: "claude_code" }`. Only concrete file/shell equivalents in Droid's catalog are covered by native execution: Read/Edit/Write/Create/LS/Grep/Glob/Execute/Bash/MultiEdit/NotebookEdit. |
 | Droid MCP | Every other advertised host tool is registered under `mcp__droid__*`, including Factory Skill/Task/ToolSearch/ExitSpecMode, Mission controls and unknown plugin tools. Factory skill definitions and task IDs remain separate from native Claude Skill/Agent. |

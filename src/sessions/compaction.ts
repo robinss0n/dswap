@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { asBlocks } from "../protocol/content.js";
+import { asBlocks, systemText } from "../protocol/content.js";
+import { hostAllowsAnyTools } from "../runtime/native-tool-policy.js";
 import type { MessagesRequest } from "../types.js";
 import { isCompactionSummary } from "../workspace.js";
 
@@ -45,6 +46,24 @@ export function compactedSummaryText(request: MessagesRequest): string | undefin
   const first = request.messages.find((message) => message.role === "user");
   const block = first ? asBlocks(first.content)[0] : undefined;
   return block?.type === "text" && typeof block.text === "string" && isCompactionSummary(block.text) ? block.text : undefined;
+}
+
+/** How Droid's summarizer opens its only user message: a first summary, or an update of the previous one. */
+const SUMMARIZER_OPENINGS = ["Please summarize the following conversation:", "Previous summary:"];
+
+/**
+ * Droid's summarizer instructions when this is the tool-free request that writes a
+ * compaction summary, or undefined. Droid sends them as the system prompt; both its
+ * fixed and adaptive variants ask for the summary inside <summary> tags.
+ */
+export function droidSummarizerInstructions(request: MessagesRequest): string | undefined {
+  if (hostAllowsAnyTools(request) || request.messages.length !== 1 || request.messages[0]!.role !== "user") return undefined;
+  const first = asBlocks(request.messages[0]!.content)[0];
+  if (first?.type !== "text" || typeof first.text !== "string") return undefined;
+  const opening = first.text;
+  if (!SUMMARIZER_OPENINGS.some((prefix) => opening.startsWith(prefix))) return undefined;
+  const instructions = systemText(request.system).trim();
+  return instructions.includes("<summary>") ? instructions : undefined;
 }
 
 /** Where the generated summary body may end and Droid's retained lists begin. */

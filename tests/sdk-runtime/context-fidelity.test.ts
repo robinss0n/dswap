@@ -9,6 +9,7 @@ import type { SessionRecord } from "../../src/sessions/state.js";
 import type { Message } from "../../src/types.js";
 import { forbiddenNamesIn } from "../../src/upstream/auth-env.js";
 import { COMPACTION_SUMMARY } from "../../src/workspace.js";
+import { STABLE_DROID_APPEND } from "../../src/runtime/system-prompt.js";
 
 const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const runtimes: SdkRuntime[] = [];
@@ -207,5 +208,42 @@ describe("continuity is reported before any output", () => {
     const turn = await create(sdk).handle(request([user("hello"), reply("ok"), user("more")], { sdkSessionId: "native-1" }));
     expect(sdk.calls[0]!.options.resume).toBe("native-1");
     expect(turn.continuity).toMatchObject({ kind: "resumed" });
+  });
+});
+
+describe("Droid summarizer in Claude Code prompt mode", () => {
+  const instructions = "You are Droid, an AI software engineering agent built by Factory.\n\nFavor a thorough, complete summary.\n\nReturn the summary inside <summary> tags.";
+  const transcript = "Please summarize the following conversation:\n```\nUSER: keep PORT 8123\n```\n\nRemember to wrap your final summary in <summary> tags.";
+  const summarize = (patch: Partial<RuntimeRequest["request"]> = {}): RuntimeRequest => ({
+    ...request([user(transcript)]), request: { model: "relay", max_tokens: 16000, system: instructions, tools: [], messages: [user(transcript)], ...patch },
+  });
+  const sentText = (sdk: ScriptedSdk) => JSON.stringify(sdk.inputs[0]!.message.content);
+
+  it("carries the summarizer instructions in the preset append, not the user message", async () => {
+    const sdk = new ScriptedSdk(() => [assistant("m1", "<summary>PORT 8123</summary>", usage(10, 5)), success]);
+    await create(sdk, { promptMode: "claude-code", permissionMode: "ask", remoteWorkspace: true, desktopProfile: true }).handle(summarize());
+    const prompt = sdk.calls[0]!.options.systemPrompt as { type: string; preset: string; append: string };
+    expect(prompt.type).toBe("preset");
+    expect(prompt.preset).toBe("claude_code");
+    expect(prompt.append.startsWith(STABLE_DROID_APPEND)).toBe(true);
+    expect(prompt.append.endsWith(`\n\n${instructions}`)).toBe(true);
+    expect(sdk.calls[0]!.options.tools).toEqual({ type: "preset", preset: "claude_code" });
+    expect(sentText(sdk)).toContain("keep PORT 8123");
+    expect(sentText(sdk)).not.toContain("Favor a thorough");
+    expect(sentText(sdk)).not.toContain("Host context (dynamic)");
+  });
+
+  it("keeps the stable append and host context for any other tool-free request", async () => {
+    const sdk = new ScriptedSdk(() => [assistant("m1", "Fix the filter", usage(10, 5)), success]);
+    const title = "Return a concise title for this coding session.";
+    await create(sdk, { promptMode: "claude-code" }).handle({ ...request([user("Fix the filter")]), request: { model: "relay", max_tokens: 64, system: title, tools: [], messages: [user("Fix the filter")] } });
+    expect((sdk.calls[0]!.options.systemPrompt as { append: string }).append).toBe(STABLE_DROID_APPEND);
+    expect(sentText(sdk)).toContain(`Host context (dynamic):\\n${title}`);
+  });
+
+  it("leaves Droid prompt mode unchanged: the instructions already are the system prompt", async () => {
+    const sdk = new ScriptedSdk(() => [assistant("m1", "<summary>PORT 8123</summary>", usage(10, 5)), success]);
+    await create(sdk, { promptMode: "droid" }).handle(summarize());
+    expect(sdk.calls[0]!.options.systemPrompt).toEqual(expect.stringMatching(/^You are Droid[\s\S]*<summary> tags\./));
   });
 });

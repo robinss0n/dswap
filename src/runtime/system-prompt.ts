@@ -42,13 +42,19 @@ export interface PresetSystemPrompt {
 /** Preset mode with a remote workspace: Claude Code's own tools would act on the wrong machine. */
 export const PRESET_REMOTE_WORKSPACE_NOTE = "Remote workspace: Droid, the project and all of its tools are on another machine. Every Claude Code built-in tool runs on this model server instead and is always denied; do not call them. Use only the advertised mcp__droid__ tools, including for reading files. The primary working directory in Claude Code's environment section is an empty placeholder on the model server, so never use or mention it; the project is the folder in Droid's environment reminder.";
 
-export function buildPresetSystemPrompt(desktopProfile = false, remoteWorkspace = false): PresetSystemPrompt {
+/**
+ * A Droid compaction summary runs in its own short-lived query, so its
+ * summarizer instructions can follow the stable append without costing a cached
+ * prefix. There they keep the system-prompt weight they have in Droid itself.
+ */
+export function buildPresetSystemPrompt(desktopProfile = false, remoteWorkspace = false, summarizerInstructions?: string): PresetSystemPrompt {
   return {
     type: "preset",
     preset: "claude_code",
     append: STABLE_DROID_APPEND
       + (desktopProfile ? " Desktop profile: all changes, commands, background jobs, planning approvals and subagents MUST use the advertised mcp__droid__ tools. Droid owns approvals and autonomy, including spec mode. Native tools are read-only and may be denied; never work around that denial." : "")
-      + (remoteWorkspace ? ` ${PRESET_REMOTE_WORKSPACE_NOTE}` : ""),
+      + (remoteWorkspace ? ` ${PRESET_REMOTE_WORKSPACE_NOTE}` : "")
+      + (summarizerInstructions ? `\n\n${summarizerInstructions}` : ""),
   };
 }
 
@@ -74,9 +80,11 @@ export function buildHostContext(input: RuntimeRequest, cwd?: string): string {
   const missionDir = Array.isArray(header) ? header[0] : header;
   // Droid's prompt is already the system prompt and Claude has no native tools: only the workspace is added.
   if (input.droidPrompt) return cwd ? buildWorkspaceAppendix(cwd, missionDir) : "";
+  // The summarizer instructions are already in the preset's append.
+  const hostInSystem = Boolean(input.summarizerInstructions);
   // X-Bridge-Role identifies a model configuration, which Factory Task subagents
   // can inherit. The host's actual instructions own roles, skills and workflow.
-  const roleContext = host.trim()
+  const roleContext = hostInSystem ? [] : host.trim()
     ? [`Host context (dynamic):\n${host}`]
     : [
       input.role !== "unknown" ? `Droid role: ${input.role}.` : "",
