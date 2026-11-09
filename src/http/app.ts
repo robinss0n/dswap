@@ -15,7 +15,7 @@ import { explicitSessionId, historyMessageHashes, historyPrefixHash, resolveSess
 import { droidReasoningEffort, droidReasoningLevel } from "../runtime/reasoning.js";
 import { isEnded } from "../sessions/state.js";
 import { HUMAN_WAIT_TOOLS, MISSION_SPAWN_TOOLS, MISSION_WORKER_END_TOOL } from "../runtime/mission-tools.js";
-import { compactedSummaryText, compactionSummaryKey, lastSummarizedToolCall, sameToolInput, summaryQuote } from "../sessions/compaction.js";
+import { compactedSummaryText, compactionSummaryKey, droidSummarizerInstructions, lastSummarizedToolCall, routedSummaryRequest, sameToolInput, summaryQuote } from "../sessions/compaction.js";
 import { CONTEXT_OVERFLOW_CODE } from "../runtime/upstream-error.js";
 import { FallbackAlerts } from "../notify.js";
 import { hostAllowsAnyTools } from "../runtime/native-tool-policy.js";
@@ -398,6 +398,12 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
           codexLoad: routed.loads.codex?.load ?? null, claudeLoad: routed.loads.claude?.load ?? null });
       }
       parsed = { ...parsed, model: routed.target };
+    }
+    const summaryRoute = config.summaryRoute;
+    if (summaryRoute && droidSummarizerInstructions(parsed)
+      && (configuredModels(config).find((model) => model.id === parsed.model)?.provider ?? providerFromModelId(parsed.model)) === "claude") {
+      logger.info("summary_routed", { from: parsed.model, to: summaryRoute.model, effort: summaryRoute.effort, droidEffort: droidReasoningLevel(parsed) ?? null });
+      parsed = routedSummaryRequest(parsed, summaryRoute);
     }
     // Reject stale menu entries before binding a host or creating a session.
     if (config.models !== undefined) {
@@ -792,7 +798,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
   function runtimeStatus(): Record<string, unknown> {
     return { ...runtime.describe?.(), control: control.describe(), authFailureCount, activeRequests: activeRequests.size,
       retainedSessions: store.list().length, workerEndTimers: workerEndTimers.size, compactionLinks: compactions.size,
-      upstreamCompaction: config.upstreamCompaction ?? "off", continuity: { ...continuityCounts },
+      upstreamCompaction: config.upstreamCompaction ?? "off", summaryRoute: config.summaryRoute ?? null, continuity: { ...continuityCounts },
       memory: { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed }, closing };
   }
 }

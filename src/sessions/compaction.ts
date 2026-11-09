@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { asBlocks, systemText } from "../protocol/content.js";
+import type { SummaryRoute } from "../config.js";
 import { hostAllowsAnyTools } from "../runtime/native-tool-policy.js";
 import type { MessagesRequest } from "../types.js";
 import { isCompactionSummary } from "../workspace.js";
@@ -64,6 +65,15 @@ export function droidSummarizerInstructions(request: MessagesRequest): string | 
   if (!SUMMARIZER_OPENINGS.some((prefix) => opening.startsWith(prefix))) return undefined;
   const instructions = systemText(request.system).trim();
   return instructions.includes("<summary>") ? instructions : undefined;
+}
+
+/**
+ * Droid writes a summary with the session's model at that model's lowest effort.
+ * A configured route replaces the model and the effort; all other fields stay.
+ */
+export function routedSummaryRequest(request: MessagesRequest, route: SummaryRoute): MessagesRequest {
+  const output = request.output_config !== null && typeof request.output_config === "object" && !Array.isArray(request.output_config) ? request.output_config : {};
+  return { ...request, model: route.model, thinking: undefined, reasoning_effort: undefined, output_config: { ...output, effort: route.effort } };
 }
 
 /** Where the generated summary body may end and Droid's retained lists begin. */

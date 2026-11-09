@@ -7,7 +7,10 @@ import type { BridgeMode } from "./types.js";
 import { parseAuthMode, type AuthMode } from "./upstream/auth-env.js";
 import { canonicalWorkspacePath } from "./workspace.js";
 import { routeModels } from "./routing.js";
-import { codexModels, googleModels, modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
+import { codexModels, configuredModels, googleModels, modelsFromIds, parseModelIds, validateModels, withAccounts, type BridgeModel } from "./models.js";
+import type { ClaudeEffort } from "./runtime/reasoning.js";
+
+export interface SummaryRoute { model: string; effort: ClaudeEffort }
 
 export interface BridgeConfig {
   desktopProfile?: boolean;
@@ -64,6 +67,12 @@ export interface BridgeConfig {
    * "upstream": leave the upstream's auto-compaction on (previous behaviour).
    */
   upstreamCompaction?: "off" | "upstream";
+  /**
+   * BRIDGE_SUMMARY_MODEL (+ BRIDGE_SUMMARY_EFFORT, default high): Droid's compaction
+   * summaries for Claude sessions go to this Claude model at this effort. Unset: the
+   * session's model at the effort Droid asks for. GPT and other sessions are unchanged.
+   */
+  summaryRoute?: SummaryRoute;
   upstreamBaseUrl?: string;
   upstreamModel?: string;
   upstreamTokenEnv?: string;
@@ -102,6 +111,24 @@ function upstreamCompactionEnv(): "off" | "upstream" {
   const value = env("BRIDGE_UPSTREAM_COMPACTION", "off");
   if (value !== "off" && value !== "upstream") throw new Error("BRIDGE_UPSTREAM_COMPACTION must be off or upstream.");
   return value;
+}
+
+const SUMMARY_EFFORTS: readonly ClaudeEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
+function summaryRouteEnv(): SummaryRoute | undefined {
+  const model = env("BRIDGE_SUMMARY_MODEL");
+  if (!model) return undefined;
+  return { model, effort: env("BRIDGE_SUMMARY_EFFORT", "high") as ClaudeEffort };
+}
+
+function validateSummaryRoute(config: BridgeConfig): void {
+  const route = config.summaryRoute;
+  if (!route) return;
+  if (!SUMMARY_EFFORTS.includes(route.effort)) throw new Error("BRIDGE_SUMMARY_EFFORT must be low, medium, high, xhigh or max.");
+  const listed = configuredModels(config).find((model) => model.id === route.model);
+  if (!listed || (listed.provider ?? "claude") !== "claude") {
+    throw new Error(`BRIDGE_SUMMARY_MODEL=${route.model} must be a Claude model in this Bridge's model list.`);
+  }
 }
 
 function env(name: string, fallback?: string): string | undefined {
@@ -264,6 +291,7 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     permissionMode,
     promptMode,
     upstreamCompaction: overrides.upstreamCompaction ?? upstreamCompactionEnv(),
+    summaryRoute: overrides.summaryRoute ?? summaryRouteEnv(),
     upstreamBaseUrl: overrides.upstreamBaseUrl ?? env("BRIDGE_UPSTREAM_BASE_URL"),
     upstreamModel: overrides.upstreamModel ?? env("BRIDGE_UPSTREAM_MODEL"),
     upstreamTokenEnv: overrides.upstreamTokenEnv ?? env("BRIDGE_UPSTREAM_TOKEN_ENV"),
@@ -282,5 +310,6 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     if (value === undefined || !Number.isSafeInteger(value) || value < minimum) throw new Error(`${name} must be an integer >= ${minimum}.`);
   }
   if (claudeConfig) Object.defineProperty(config, "claudeConfig", { value: claudeConfig });
+  validateSummaryRoute(config);
   return config;
 }
