@@ -12,6 +12,17 @@ import type { ClaudeEffort } from "./runtime/reasoning.js";
 
 export interface SummaryRoute { model: string; effort: ClaudeEffort }
 
+/** BRIDGE_PRESUMMARY=1: write and check a Claude conversation's summary in the background before Droid compacts it. */
+export interface PresummaryConfig {
+  /** Share of `limit` at which the background summary starts (BRIDGE_PRESUMMARY_AT, default 0.7). */
+  at: number;
+  /** Droid's compaction limit in prompt tokens (BRIDGE_COMPACTION_TOKENS, default 250000). */
+  limit: number;
+  /** Claude model and effort that check the background summary (BRIDGE_SUMMARY_CHECK_MODEL, default haiku; BRIDGE_SUMMARY_CHECK_EFFORT, default high). */
+  checkModel: string;
+  checkEffort: ClaudeEffort;
+}
+
 export interface BridgeConfig {
   desktopProfile?: boolean;
   /**
@@ -73,6 +84,7 @@ export interface BridgeConfig {
    * session's model at the effort Droid asks for. GPT and other sessions are unchanged.
    */
   summaryRoute?: SummaryRoute;
+  presummary?: PresummaryConfig;
   upstreamBaseUrl?: string;
   upstreamModel?: string;
   upstreamTokenEnv?: string;
@@ -121,6 +133,24 @@ function summaryRouteEnv(): SummaryRoute | undefined {
   return { model, effort: env("BRIDGE_SUMMARY_EFFORT", "high") as ClaudeEffort };
 }
 
+function presummaryEnv(): PresummaryConfig | undefined {
+  if (env("BRIDGE_PRESUMMARY") !== "1") return undefined;
+  return { at: Number(env("BRIDGE_PRESUMMARY_AT", "0.7")), limit: intEnv("BRIDGE_COMPACTION_TOKENS", 250_000),
+    checkModel: env("BRIDGE_SUMMARY_CHECK_MODEL", "haiku")!, checkEffort: env("BRIDGE_SUMMARY_CHECK_EFFORT", "high") as ClaudeEffort };
+}
+
+function validatePresummary(config: BridgeConfig): void {
+  const presummary = config.presummary;
+  if (!presummary) return;
+  if (!config.summaryRoute) throw new Error("BRIDGE_PRESUMMARY=1 needs BRIDGE_SUMMARY_MODEL: the background summary uses the summary route.");
+  if (!(presummary.at > 0 && presummary.at < 1)) throw new Error("BRIDGE_PRESUMMARY_AT must be a number between 0 and 1.");
+  if (!Number.isSafeInteger(presummary.limit) || presummary.limit < 1000) throw new Error("BRIDGE_COMPACTION_TOKENS must be an integer >= 1000.");
+  if (!SUMMARY_EFFORTS.includes(presummary.checkEffort)) throw new Error("BRIDGE_SUMMARY_CHECK_EFFORT must be low, medium, high, xhigh or max.");
+  const listed = configuredModels(config).find((model) => model.id === presummary.checkModel);
+  if (!listed || (listed.provider ?? "claude") !== "claude") {
+    throw new Error(`BRIDGE_SUMMARY_CHECK_MODEL=${presummary.checkModel} must be a Claude model in this Bridge's model list.`);
+  }
+}
 function validateSummaryRoute(config: BridgeConfig): void {
   const route = config.summaryRoute;
   if (!route) return;
@@ -292,6 +322,7 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     promptMode,
     upstreamCompaction: overrides.upstreamCompaction ?? upstreamCompactionEnv(),
     summaryRoute: overrides.summaryRoute ?? summaryRouteEnv(),
+    presummary: overrides.presummary ?? presummaryEnv(),
     upstreamBaseUrl: overrides.upstreamBaseUrl ?? env("BRIDGE_UPSTREAM_BASE_URL"),
     upstreamModel: overrides.upstreamModel ?? env("BRIDGE_UPSTREAM_MODEL"),
     upstreamTokenEnv: overrides.upstreamTokenEnv ?? env("BRIDGE_UPSTREAM_TOKEN_ENV"),
@@ -311,5 +342,6 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
   }
   if (claudeConfig) Object.defineProperty(config, "claudeConfig", { value: claudeConfig });
   validateSummaryRoute(config);
+  validatePresummary(config);
   return config;
 }
