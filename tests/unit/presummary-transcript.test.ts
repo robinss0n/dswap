@@ -40,9 +40,18 @@ describe("pre-summary transcript primitives", () => {
     expect(first.messages[0]?.content).toMatch(/^Please summarize/);
   });
   it("falls back on mismatches, update forms, and ambiguous fences", () => {
+    expect(rewriteFirstSummary(first, "USER: hi", "  \n")).toBeUndefined();
     expect(rewriteFirstSummary(first, "USER: bye", "checked")).toBeUndefined();
     expect(rewriteFirstSummary(request("Previous summary:\n```\nold\n```"), "USER: hi", "checked")).toBeUndefined();
     expect(rewriteFirstSummary(first, "USER: hi", "```")).toBeUndefined();
     expect(rewriteFirstSummary(request("Please summarize the following conversation:\n```\nUSER: hi\n```\nextra\n```"), "USER: hi", "checked")).toBeUndefined();
+  });
+  it.each(["USER: inline ``` fence", "USER: hi\n```not a closing fence"])("rejects ambiguous transcript %s", (transcript) => {
+    const envelope = request(`Please summarize the following conversation:\n\`\`\`\n${transcript}\n\`\`\``);
+    expect(rewriteFirstSummary(envelope, transcript, "checked")).toBeUndefined();
+  });
+  it("rejects a closing fence with trailing non-newline text", () => {
+    const envelope = request("Please summarize the following conversation:\n```\nUSER: hi\n```suffix");
+    expect(rewriteFirstSummary(envelope, "USER: hi", "checked")).toBeUndefined();
   });
 });

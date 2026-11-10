@@ -1,5 +1,16 @@
 # Compatibility matrix
 
+Background pre-summary status (`presummary` branch): transcript serialization and
+first-summary rewrite helpers have unit coverage but are not wired into HTTP or
+the runtime. There is no background model/checker job, threshold configuration,
+conversation association, or shutdown lifecycle yet. Existing summary routing is
+unchanged. Exact matching normalizes CRLF only and requires a message boundary;
+ambiguous code fences and empty checked summaries are rejected. Serializer
+fixtures are derived from a reference implementation, not byte-for-byte live
+Droid captures. Thinking truncation uses JavaScript UTF-16 units; Unicode and
+host-side content transformations remain compatibility risks. Later-compaction
+update requests are deliberately not rewritten by the helper.
+
 Bridge exposes part of Anthropic Messages to Droid and adapts it to Claude Code's native SDK session. Accepting a request field in JSON does not mean that the SDK honors its Messages API semantics.
 
 | Field / behavior | Current adaptation | Validation / limit |

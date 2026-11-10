@@ -44,7 +44,7 @@ export function transcriptRemainder(transcript: string, prefix: string): string 
 
 /** Strict envelope parsing: embedded fences are ambiguous, so fall back to plain. */
 export function rewriteFirstSummary(request: MessagesRequest, prefix: string, summary: string): MessagesRequest | undefined {
-  if (request.messages.length !== 1 || request.messages[0]?.role !== "user" || summary.includes("```")) return undefined;
+  if (request.messages.length !== 1 || request.messages[0]?.role !== "user" || !summary.trim() || summary.includes("```")) return undefined;
   const content = request.messages[0].content;
   const text = typeof content === "string" ? content
     : content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;
@@ -53,7 +53,9 @@ export function rewriteFirstSummary(request: MessagesRequest, prefix: string, su
   const opening = "Please summarize the following conversation:\n```\n";
   if (!normalized.startsWith(opening)) return undefined;
   const end = normalized.indexOf("\n```", opening.length);
-  if (end < 0 || normalized.indexOf("```", end + 4) >= 0) return undefined;
+  if (end < 0 || (normalized[end + 4] !== undefined && normalized[end + 4] !== "\n")
+    || normalized.indexOf("```", opening.length) !== end + 1
+    || normalized.indexOf("```", end + 4) >= 0) return undefined;
   const transcript = normalized.slice(opening.length, end);
   const remainder = transcriptRemainder(transcript, prefix);
   if (remainder === undefined) return undefined;

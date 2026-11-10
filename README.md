@@ -4,6 +4,11 @@
 
 English | [简体中文](README.zh-CN.md)
 
+Background pre-summary is not available yet. The `presummary` branch contains
+tested transcript/rewrite primitives only; no `BRIDGE_PRESUMMARY` setting is
+implemented, and ordinary compaction routing remains unchanged. Do not deploy
+that branch expecting reduced compaction latency.
+
 dswap began as a fork of [aa2246740/factory-cc](https://github.com/aa2246740/factory-cc) ("Relay Bridge"); see [Credits](#credits). It adds Codex and Google backends, multi-account routing and the `dswap` dashboard. Installations from before the rename move to the dswap names on the next `npm run desktop -- restart`; the old folders stay behind as symlinks.
 
 Connect Factory Droid's BYOK custom models to the **official Claude Agent SDK and unmodified Claude Code**. Claude Code retains its native system prompt, built-in tools, and sessions; Droid executes its own skills, tasks, plugin tools, and Mission lifecycle operations via namespaced MCP.
