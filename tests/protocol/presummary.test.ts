@@ -16,7 +16,7 @@ const MODELS: BridgeModel[] = [
   { id: "haiku", model: "haiku", displayName: "Claude Haiku" },
   { id: "codex:default:gpt-5.5", model: "gpt-5.5", provider: "codex", displayName: "Codex · gpt-5.5" },
 ];
-const PRESUMMARY = { at: 0.7, limit: 1000, checkModel: "haiku", checkEffort: "high" as const };
+const PRESUMMARY = { at: 0.7, limit: 1000, orchestratorLimit: 2000, checkModel: "haiku", checkEffort: "high" as const };
 
 const apps: BridgeApp[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
@@ -99,6 +99,16 @@ describe("background pre-summary over HTTP", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("waits for a Missions orchestrator's own, higher limit", async () => {
+    const { seen, post, until } = await start();
+    await post({ ...droidTurn("opus"), system: "You are Droid.\n\n# Workstream orchestrator\n\nMission: build it" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(seen).toHaveLength(1);
+    await post(droidTurn("opus"));
+    await until(4);
+    expect(seen.map(({ internal }) => internal)).toEqual([false, false, true, true]);
+  });
+
   it.each([
     ["without a summary route", { summaryRoute: undefined }, /needs BRIDGE_SUMMARY_MODEL/],
     ["with a share outside 0-1", { presummary: { ...PRESUMMARY, at: 1.5 } }, /BRIDGE_PRESUMMARY_AT/],
@@ -111,7 +121,7 @@ describe("background pre-summary over HTTP", () => {
     vi.stubEnv("BRIDGE_PRESUMMARY", "1");
     vi.stubEnv("BRIDGE_COMPACTION_TOKENS", "300000");
     try {
-      expect(config({ presummary: undefined }).presummary).toEqual({ at: 0.7, limit: 300000, checkModel: "haiku", checkEffort: "high" });
+      expect(config({ presummary: undefined }).presummary).toEqual({ at: 0.7, limit: 300000, orchestratorLimit: 500000, checkModel: "haiku", checkEffort: "high" });
     } finally { vi.unstubAllEnvs(); }
   });
 });

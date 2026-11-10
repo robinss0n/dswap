@@ -18,6 +18,8 @@ export interface PresummaryConfig {
   at: number;
   /** Droid's compaction limit in prompt tokens (BRIDGE_COMPACTION_TOKENS, default 250000). */
   limit: number;
+  /** A Missions orchestrator's limit, from Droid's mission defaults (BRIDGE_ORCHESTRATOR_COMPACTION_TOKENS, default 500000). */
+  orchestratorLimit: number;
   /** Claude model and effort that check the background summary (BRIDGE_SUMMARY_CHECK_MODEL, default haiku; BRIDGE_SUMMARY_CHECK_EFFORT, default high). */
   checkModel: string;
   checkEffort: ClaudeEffort;
@@ -136,6 +138,7 @@ function summaryRouteEnv(): SummaryRoute | undefined {
 function presummaryEnv(): PresummaryConfig | undefined {
   if (env("BRIDGE_PRESUMMARY") !== "1") return undefined;
   return { at: Number(env("BRIDGE_PRESUMMARY_AT", "0.7")), limit: intEnv("BRIDGE_COMPACTION_TOKENS", 250_000),
+    orchestratorLimit: intEnv("BRIDGE_ORCHESTRATOR_COMPACTION_TOKENS", 500_000),
     checkModel: env("BRIDGE_SUMMARY_CHECK_MODEL", "haiku")!, checkEffort: env("BRIDGE_SUMMARY_CHECK_EFFORT", "high") as ClaudeEffort };
 }
 
@@ -145,6 +148,7 @@ function validatePresummary(config: BridgeConfig): void {
   if (!config.summaryRoute) throw new Error("BRIDGE_PRESUMMARY=1 needs BRIDGE_SUMMARY_MODEL: the background summary uses the summary route.");
   if (!(presummary.at > 0 && presummary.at < 1)) throw new Error("BRIDGE_PRESUMMARY_AT must be a number between 0 and 1.");
   if (!Number.isSafeInteger(presummary.limit) || presummary.limit < 1000) throw new Error("BRIDGE_COMPACTION_TOKENS must be an integer >= 1000.");
+  if (!Number.isSafeInteger(presummary.orchestratorLimit) || presummary.orchestratorLimit < 1000) throw new Error("BRIDGE_ORCHESTRATOR_COMPACTION_TOKENS must be an integer >= 1000.");
   if (!SUMMARY_EFFORTS.includes(presummary.checkEffort)) throw new Error("BRIDGE_SUMMARY_CHECK_EFFORT must be low, medium, high, xhigh or max.");
   const listed = configuredModels(config).find((model) => model.id === presummary.checkModel);
   if (!listed || (listed.provider ?? "claude") !== "claude") {

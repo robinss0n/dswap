@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { Presummaries, promptTokens, summaryText } from "../../src/sessions/presummary.js";
+import { isMissionOrchestrator, Presummaries, promptTokens, summaryText } from "../../src/sessions/presummary.js";
 import { MESSAGE_BOUNDARY, serializeTranscript } from "../../src/sessions/presummary-transcript.js";
 import type { MessagesRequest } from "../../src/types.js";
 
-const CONFIG = { at: 0.7, limit: 1000, checkModel: "haiku", checkEffort: "high" as const };
+const CONFIG = { at: 0.7, limit: 1000, orchestratorLimit: 2000, checkModel: "haiku", checkEffort: "high" as const };
 const turn = (text: string): MessagesRequest => ({ model: "opus", max_tokens: 64, messages: [{ role: "user", content: text }, { role: "assistant", content: "ok" }] });
 const compaction = (transcript: string): MessagesRequest => ({ model: "opus", max_tokens: 64, system: "x <summary>", messages: [{ role: "user", content: `Please summarize the following conversation:\n\`\`\`\n${transcript}\n\`\`\`\n\nTags.` }] });
 const logger = () => ({ info: vi.fn(), warn: vi.fn() });
@@ -17,7 +17,7 @@ const isCheck = (body: MessagesRequest) => JSON.stringify(body.messages).include
 
 describe("background pre-summary", () => {
   it("counts every prompt token Droid compares with its limit and reads <summary> blocks", () => {
-    expect(promptTokens({ input_tokens: 2, cache_read_input_tokens: 500, cache_creation_input_tokens: 300 })).toBe(802);
+    expect(promptTokens({ input_tokens: 2, cache_read_input_tokens: 500, cache_creation_input_tokens: 300, output_tokens: 40 })).toBe(842);
     expect(summaryText("a <summary> body </summary> b")).toBe("body");
     expect(summaryText("no tags")).toBeUndefined();
   });
@@ -52,6 +52,18 @@ describe("background pre-summary", () => {
     expect(taken.path).toBe("presummary");
     expect(taken.request.messages[0]?.content).toBe("Previous summary:\n```\nCHECKED\n```\n\nThese messages were sent since the previous summary:\n```\nUSER: later\n```\n\nTags.");
     expect(jobs.take(compaction(`${prefix}${MESSAGE_BOUNDARY}USER: later`))).toMatchObject({ path: "plain", reason: "no pre-summary" });
+  });
+
+  it("uses the orchestrator's own limit for a Missions orchestrator", () => {
+    const orchestrator = (text: string): MessagesRequest => ({ ...turn(text), system: [{ type: "text", text: "You are Droid." }, { type: "text", text: "# Workstream orchestrator\n\nMission: build it" }] });
+    expect(isMissionOrchestrator(orchestrator("x"))).toBe(true);
+    expect(isMissionOrchestrator({ ...turn("x"), system: "Notes on the # Workstream orchestrator heading" })).toBe(false);
+    const jobs = new Presummaries(CONFIG, fakeSend(() => new Promise<string>(() => {})).send, logger());
+    expect(jobs.consider("o", orchestrator("x"), 1399)).toBe(false);
+    expect(jobs.consider("o", orchestrator("x"), 1400)).toBe(true);
+    const normal = new Presummaries(CONFIG, fakeSend(() => new Promise<string>(() => {})).send, logger());
+    expect(normal.consider("n", turn("x"), 700)).toBe(true);
+    jobs.close(); normal.close();
   });
 
   it("keeps the unchecked draft when only the check fails, and records a failed summary", async () => {

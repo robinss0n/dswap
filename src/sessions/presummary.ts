@@ -1,4 +1,5 @@
 import type { PresummaryConfig } from "../config.js";
+import { systemText } from "../protocol/content.js";
 import type { MessagesRequest, Usage } from "../types.js";
 import { commonPrefixLength, firstSummaryTranscript, rewriteFirstSummary, serializeTranscript } from "./presummary-transcript.js";
 
@@ -37,9 +38,14 @@ interface Entry { prefix: string; state: "running" | "ready" | "failed"; started
 export interface PresummaryLimits { entries: number; ageMs: number; timeoutMs: number }
 const LIMITS: PresummaryLimits = { entries: 8, ageMs: 6 * 60 * 60_000, timeoutMs: 20 * 60_000 };
 
-/** What Droid compares with its limit: everything the last call read. */
+/** What Droid compares with its limit: the last call's input, cache and output tokens. */
 export function promptTokens(usage: Partial<Usage> | undefined): number {
-  return (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
+  return (usage?.input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0) + (usage?.output_tokens ?? 0);
+}
+
+/** Droid gives a Missions orchestrator its own compaction limit and opens its role guidance with this heading. */
+export function isMissionOrchestrator(request: MessagesRequest): boolean {
+  return /(^|\n)# Workstream orchestrator\n/.test(systemText(request.system));
 }
 
 export function summaryText(text: string): string | undefined {
@@ -60,14 +66,16 @@ export class Presummaries {
 
   /** After a Claude turn. Starts at most one job at a time, and one per conversation. */
   consider(key: string, request: MessagesRequest, tokens: number): boolean {
-    if (tokens < this.config.at * this.config.limit || this.entries.has(key)) return false;
+    const orchestrator = isMissionOrchestrator(request);
+    const limit = orchestrator ? this.config.orchestratorLimit : this.config.limit;
+    if (tokens < this.config.at * limit || this.entries.has(key)) return false;
     if ([...this.entries.values()].some((entry) => entry.state === "running")) return false;
     this.prune();
     const prefix = serializeTranscript(request.messages);
     if (!prefix) return false;
     const entry: Entry = { prefix, state: "running", startedAt: this.now(), controller: new AbortController() };
     this.entries.set(key, entry);
-    this.logger.info("presummary_started", { tokens, messages: request.messages.length, chars: prefix.length });
+    this.logger.info("presummary_started", { tokens, limit, orchestrator, messages: request.messages.length, chars: prefix.length });
     void this.run(entry, request.model);
     return true;
   }
