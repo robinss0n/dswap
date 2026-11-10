@@ -39,19 +39,16 @@ describe("pre-summary transcript primitives", () => {
     expect(result).toEqual({ ...first, messages: [{ role: "user", content: "Previous summary:\n```\n<summary>checked</summary>\n```\n\nThese messages were sent since the previous summary:\n```\nASSISTANT: ok\n```\nWrap in <summary> tags." }] });
     expect(first.messages[0]?.content).toMatch(/^Please summarize/);
   });
-  it("falls back on mismatches, update forms, and ambiguous fences", () => {
+  it("falls back on mismatches, update forms, empty summaries and a missing closing fence", () => {
     expect(rewriteFirstSummary(first, "USER: hi", "  \n")).toBeUndefined();
     expect(rewriteFirstSummary(first, "USER: bye", "checked")).toBeUndefined();
     expect(rewriteFirstSummary(request("Previous summary:\n```\nold\n```"), "USER: hi", "checked")).toBeUndefined();
-    expect(rewriteFirstSummary(first, "USER: hi", "```")).toBeUndefined();
-    expect(rewriteFirstSummary(request("Please summarize the following conversation:\n```\nUSER: hi\n```\nextra\n```"), "USER: hi", "checked")).toBeUndefined();
+    expect(rewriteFirstSummary(request("Please summarize the following conversation:\n```\nUSER: hi" + MESSAGE_BOUNDARY + "ASSISTANT: ok"), "USER: hi", "checked")).toBeUndefined();
   });
-  it.each(["USER: inline ``` fence", "USER: hi\n```not a closing fence"])("rejects ambiguous transcript %s", (transcript) => {
-    const envelope = request(`Please summarize the following conversation:\n\`\`\`\n${transcript}\n\`\`\``);
-    expect(rewriteFirstSummary(envelope, transcript, "checked")).toBeUndefined();
-  });
-  it("rejects a closing fence with trailing non-newline text", () => {
-    const envelope = request("Please summarize the following conversation:\n```\nUSER: hi\n```suffix");
-    expect(rewriteFirstSummary(envelope, "USER: hi", "checked")).toBeUndefined();
+  it("handles code fences inside the transcript and the summary", () => {
+    const prefix = "USER: run\n```sh\nnpm test\n```";
+    const envelope = request(`Please summarize the following conversation:\n\`\`\`\n${prefix}${MESSAGE_BOUNDARY}ASSISTANT: done\n\`\`\`\n\nRemember the tags.`);
+    const content = rewriteFirstSummary(envelope, prefix, "Ran:\n```\nnpm test\n```")?.messages[0]?.content;
+    expect(content).toBe("Previous summary:\n```\nRan:\n```\nnpm test\n```\n```\n\nThese messages were sent since the previous summary:\n```\nASSISTANT: done\n```\n\nRemember the tags.");
   });
 });

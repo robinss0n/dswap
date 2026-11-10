@@ -2,7 +2,7 @@ import { droidWorkingDirectory, resolveRequestCwd } from "../workspace.js";
 import { markDroidActivity } from "../activity.js";
 import { conversationKey, ModelRouter, ROUTE_MODEL_PREFIX } from "../routing.js";
 import { createHash, randomUUID } from "node:crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BridgeConfig } from "../config.js";
@@ -15,6 +15,7 @@ import { explicitSessionId, historyMessageHashes, historyPrefixHash, resolveSess
 import { droidReasoningEffort, droidReasoningLevel } from "../runtime/reasoning.js";
 import { isEnded } from "../sessions/state.js";
 import { HUMAN_WAIT_TOOLS, MISSION_SPAWN_TOOLS, MISSION_WORKER_END_TOOL } from "../runtime/mission-tools.js";
+import { Presummaries, PRESUMMARY_HEADER, promptTokens } from "../sessions/presummary.js";
 import { compactedSummaryText, compactionSummaryKey, droidSummarizerInstructions, lastSummarizedToolCall, routedSummaryRequest, sameToolInput, summaryQuote } from "../sessions/compaction.js";
 import { CONTEXT_OVERFLOW_CODE } from "../runtime/upstream-error.js";
 import { FallbackAlerts } from "../notify.js";
@@ -69,6 +70,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
   });
   // Approvals wait on a person, so they get their own limit rather than the turn's idle limit.
   const control = new ControlBroker(runtime, store, config.approvalTimeoutMs);
+  const presummaries = config.presummary ? new Presummaries(config.presummary, sendInternal, logger) : undefined;
   runtime.setControl?.(control);
   const records: RedactedRequestRecord[] = [];
   const router = config.models?.some((model) => model.id.startsWith(ROUTE_MODEL_PREFIX))
@@ -390,7 +392,8 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
     // Droid sends the opaque Codex ID from its settings; route on the bridge's own ID.
     const alias = configuredModels(config).find((model) => droidModelId(model.id) === parsed.model);
     if (alias) parsed.model = alias.id;
-    if (config.remoteWorkspace) markDroidActivity();
+    const internal = header(headers, PRESUMMARY_HEADER) === "presummary";
+    if (config.remoteWorkspace && !internal) markDroidActivity();
     const routed = router ? await router.resolve(parsed.model, conversationKey(parsed, droidWorkingDirectory(parsed))) : undefined;
     if (routed) {
       if (!routed.reused) {
@@ -399,9 +402,14 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       }
       parsed = { ...parsed, model: routed.target };
     }
+    if (presummaries && !internal && droidSummarizerInstructions(parsed) && claudeModel(parsed.model)) {
+      const taken = presummaries.take(parsed);
+      const { request: _rewritten, ...path } = taken;
+      logger.info("summary_path", path);
+      parsed = taken.request;
+    }
     const summaryRoute = config.summaryRoute;
-    if (summaryRoute && droidSummarizerInstructions(parsed)
-      && (configuredModels(config).find((model) => model.id === parsed.model)?.provider ?? providerFromModelId(parsed.model)) === "claude") {
+    if (summaryRoute && droidSummarizerInstructions(parsed) && claudeModel(parsed.model)) {
       logger.info("summary_routed", { from: parsed.model, to: summaryRoute.model, effort: summaryRoute.effort, droidEffort: droidReasoningLevel(parsed) ?? null });
       parsed = routedSummaryRequest(parsed, summaryRoute);
     }
@@ -620,6 +628,10 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       });
       store.setState(sessionId, turn.pendingToolIds.length ? "WAITING_DROID_TOOL" : "IDLE");
       if (turn.pendingToolIds.length) scheduleWorkerEnd(sessionId, turn.pendingToolIds);
+      // Only first compactions are pre-summarized: a continuation's next summary is Droid's update form.
+      if (presummaries && !internal && provider === "claude" && !droidSummarizerInstructions(parsed) && compactedSummaryText(parsed) === undefined) {
+        presummaries.consider(conversationKey(parsed, droidWorkingDirectory(parsed)), parsed, promptTokens(turn.response.usage));
+      }
       if (summarized) rememberCompaction(summarized, turn.response.content.map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : "")).join("\n"));
       appendLogLine(turnLog, JSON.stringify(redactJson({
         at: new Date().toISOString(),
@@ -689,6 +701,35 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       if (timeoutSettled) await timeoutSettled;
       if (activeRequests.get(sessionId) === owner) activeRequests.delete(sessionId);
     }
+  }
+
+  /** The bridge's own background requests go through its normal HTTP path, so routing, sessions and logs stay the same. */
+  function sendInternal(body: MessagesRequest, signal: AbortSignal): Promise<string> {
+    const host = ["0.0.0.0", "::", ""].includes(config.host) ? "127.0.0.1" : config.host;
+    const payload = JSON.stringify({ ...body, stream: false });
+    return new Promise((resolve, reject) => {
+      const outgoing = httpRequest(`${listenUrl(host, boundPort())}/v1/messages`, {
+        method: "POST", timeout: 0, signal,
+        headers: { authorization: `Bearer ${config.clientToken}`, "content-type": "application/json", "content-length": Buffer.byteLength(payload), [PRESUMMARY_HEADER]: "presummary" },
+      }, (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+        incoming.on("error", reject);
+        incoming.on("end", () => {
+          try {
+            const reply = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { content?: Array<{ type: string; text?: string }>; error?: { message?: string } };
+            if ((incoming.statusCode ?? 500) >= 300) throw new Error(`HTTP ${incoming.statusCode}: ${reply.error?.message ?? "request failed"}`);
+            resolve((reply.content ?? []).filter((block) => block.type === "text").map((block) => block.text ?? "").join("\n"));
+          } catch (error) { reject(error); }
+        });
+      });
+      outgoing.on("error", reject);
+      outgoing.end(payload);
+    });
+  }
+
+  function claudeModel(id: string): boolean {
+    return (configuredModels(config).find((model) => model.id === id)?.provider ?? providerFromModelId(id)) === "claude";
   }
 
   function boundPort(): number {
@@ -776,6 +817,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
     close: () => {
       if (closePromise) return closePromise;
       closing = true;
+      presummaries?.close();
       clearInterval(maintenance);
       for (const sessionId of [...workerEndTimers.keys()]) clearWorkerEnd(sessionId);
       flushRequestIndex();
@@ -798,7 +840,8 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
   function runtimeStatus(): Record<string, unknown> {
     return { ...runtime.describe?.(), control: control.describe(), authFailureCount, activeRequests: activeRequests.size,
       retainedSessions: store.list().length, workerEndTimers: workerEndTimers.size, compactionLinks: compactions.size,
-      upstreamCompaction: config.upstreamCompaction ?? "off", summaryRoute: config.summaryRoute ?? null, continuity: { ...continuityCounts },
+      upstreamCompaction: config.upstreamCompaction ?? "off", summaryRoute: config.summaryRoute ?? null,
+      presummary: config.presummary && presummaries ? { ...config.presummary, ...presummaries.describe() } : null, continuity: { ...continuityCounts },
       memory: { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed }, closing };
   }
 }

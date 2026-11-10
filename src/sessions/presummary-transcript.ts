@@ -42,22 +42,39 @@ export function transcriptRemainder(transcript: string, prefix: string): string 
   return normalized.startsWith(covered + MESSAGE_BOUNDARY) ? normalized.slice(covered.length + MESSAGE_BOUNDARY.length) : undefined;
 }
 
-/** Strict envelope parsing: embedded fences are ambiguous, so fall back to plain. */
+/** First-summary request -> update form over the part after `prefix`. Droid's closing fence is the last one; transcripts may contain fences. */
 export function rewriteFirstSummary(request: MessagesRequest, prefix: string, summary: string): MessagesRequest | undefined {
-  if (request.messages.length !== 1 || request.messages[0]?.role !== "user" || !summary.trim() || summary.includes("```")) return undefined;
+  if (request.messages.length !== 1 || request.messages[0]?.role !== "user" || !summary.trim()) return undefined;
   const content = request.messages[0].content;
   const text = typeof content === "string" ? content
     : content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;
   if (typeof text !== "string") return undefined;
   const normalized = text.replace(/\r\n/g, "\n");
-  const opening = "Please summarize the following conversation:\n```\n";
-  if (!normalized.startsWith(opening)) return undefined;
-  const end = normalized.indexOf("\n```", opening.length);
-  if (end < 0 || (normalized[end + 4] !== undefined && normalized[end + 4] !== "\n")
-    || normalized.indexOf("```", opening.length) !== end + 1
-    || normalized.indexOf("```", end + 4) >= 0) return undefined;
-  const transcript = normalized.slice(opening.length, end);
-  const remainder = transcriptRemainder(transcript, prefix);
+  if (!normalized.startsWith(FIRST_OPENING)) return undefined;
+  const body = normalized.slice(FIRST_OPENING.length);
+  const close = body.lastIndexOf("\n```");
+  if (close < 0) return undefined;
+  const remainder = transcriptRemainder(body.slice(0, close), prefix);
   if (remainder === undefined) return undefined;
-  return { ...request, messages: [{ role: "user", content: `Previous summary:\n\`\`\`\n${summary}\n\`\`\`\n\nThese messages were sent since the previous summary:\n\`\`\`\n${remainder}\n\`\`\`${normalized.slice(end + 4)}` }] };
+  return { ...request, messages: [{ role: "user", content: `Previous summary:\n\`\`\`\n${summary.trim()}\n\`\`\`\n\nThese messages were sent since the previous summary:\n\`\`\`\n${remainder}${body.slice(close)}` }] };
+}
+
+const FIRST_OPENING = "Please summarize the following conversation:\n```\n";
+
+/** The transcript inside Droid's first-summary request, or undefined. */
+export function firstSummaryTranscript(request: MessagesRequest): string | undefined {
+  const content = request.messages.length === 1 ? request.messages[0]?.content : undefined;
+  const text = typeof content === "string" ? content : Array.isArray(content) && content.length === 1 && content[0]?.type === "text" ? content[0].text : undefined;
+  const normalized = typeof text === "string" ? text.replace(/\r\n/g, "\n") : undefined;
+  if (!normalized?.startsWith(FIRST_OPENING)) return undefined;
+  const body = normalized.slice(FIRST_OPENING.length);
+  const close = body.lastIndexOf("\n```");
+  return close < 0 ? undefined : body.slice(0, close);
+}
+
+export function commonPrefixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left.charCodeAt(index) === right.charCodeAt(index)) index++;
+  return index;
 }
