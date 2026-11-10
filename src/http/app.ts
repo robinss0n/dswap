@@ -1,3 +1,4 @@
+import { boundaryError, parseFreshBoundary } from "../runtime/fresh-boundary.js";
 import { droidWorkingDirectory, resolveRequestCwd } from "../workspace.js";
 import { markDroidActivity } from "../activity.js";
 import { conversationKey, ModelRouter, ROUTE_MODEL_PREFIX } from "../routing.js";
@@ -8,7 +9,7 @@ import { join } from "node:path";
 import type { BridgeConfig } from "../config.js";
 import { appendLogLine, type Logger } from "../logging.js";
 import { parseMessagesRequest } from "../protocol/validate.js";
-import { parseResponsesRequest } from "../protocol/responses.js";
+import { internalCallId, parseResponsesRequest } from "../protocol/responses.js";
 import { ResponsesWriter, responsesJson, writeResponsesError, type TurnWriter } from "./responses-stream.js";
 import { apiError } from "../protocol/messages.js";
 import { explicitSessionId, historyMessageHashes, historyPrefixHash, resolveSession, roleFromHeaders, sessionContextHash } from "../sessions/correlate.js";
@@ -422,8 +423,20 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
     if (provider !== "claude" && reasoning?.startsWith("budget:")) {
       logger.info("reasoning_budget_mapped", { model: request.model, provider, budget: reasoning, effort: droidReasoningEffort(request) });
     }
+    const freshBoundary = parseFreshBoundary(headers["x-bridge-fresh-tool-turn"]);
+    if (freshBoundary) {
+      // Policy IDs belong to the same wire protocol as the result items. Responses
+      // wraps some native IDs; normalize both before runtime ownership checks.
+      if (api === "responses") {
+        freshBoundary.answered_call_ids = freshBoundary.answered_call_ids.map(internalCallId);
+        headers["x-bridge-fresh-tool-turn"] = JSON.stringify(freshBoundary);
+        parseFreshBoundary(headers["x-bridge-fresh-tool-turn"]);
+      }
+      const ownerId = headers["x-bridge-session"];
+      if (typeof ownerId !== "string" || !store.get(ownerId) || provider !== "codex") boundaryError("Fresh boundary requires an explicit existing Codex bridge session");
+    }
     // Before this conversation takes a slot, free the one it replaces.
-    releaseCompacted(request);
+    if (!freshBoundary) releaseCompacted(request);
     const summarized = summarizedSession(request);
     const contextHash = sessionContextHash(headers, request, cwd, provider);
     const incomingHashes = historyMessageHashes(request.messages);
@@ -440,6 +453,8 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       reseedOnDroidCompaction: config.upstreamCompaction !== "upstream",
     });
     const summaryKey = compactionSummaryKey(request);
+    if (freshBoundary && (!resolved.match || resolved.match.bridgeSessionId !== headers["x-bridge-session"]
+      || resolved.match.model !== request.model || resolved.match.contextHash !== contextHash)) boundaryError("Fresh boundary session context or history mismatch");
     const session = resolved.match
       ?? withSlot(() => store.create({
         role,
@@ -496,7 +511,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       if (completed || cancellationRequested || activeRequests.get(sessionId) !== owner) return;
       cancellationRequested = true;
       watchdog.dispose();
-      store.update(sessionId, { cancelRequested: true });
+      store.update(sessionId, { cancelRequested: true, ...(freshBoundary ? { pendingToolIds: [], sdkSessionId: undefined } : {}) });
       store.setState(sessionId, "CANCELLED");
       rejectInterrupted(error);
       void runtime.cancel(sessionId, reason).catch(() => {
@@ -527,7 +542,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       cancellationRequested = true;
       timedOut = true;
       // Fence the late completion of this turn before anything else happens.
-      store.update(sessionId, { cancelRequested: true });
+      store.update(sessionId, { cancelRequested: true, ...(freshBoundary ? { pendingToolIds: [], sdkSessionId: undefined } : {}) });
       rejectInterrupted(new BridgeError(504, "request_timeout", kind === "idle"
         ? `request timed out: no progress for ${duration(config.requestTimeoutMs)}; the SDK turn was interrupted`
         : `request exceeded the turn limit of ${duration(config.turnMaxMs)} (BRIDGE_TURN_MAX_MS); the SDK turn was interrupted`));
@@ -603,7 +618,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
 
       const turn: RuntimeTurn = await Promise.race([
         interrupted,
-        runtime.handle({ request, role, session, headers, continuityReason: resolved.reason, ...(resolved.reason === "upstream-retry" ? { recovery: "cold-import" as const } : {}) }, sink),
+        runtime.handle({ request, role, session, previousSession: previous, headers, continuityReason: resolved.reason, ...(resolved.reason === "upstream-retry" ? { recovery: "cold-import" as const } : {}) }, sink),
       ]);
       if (turn.continuity) noteContinuity(turn.continuity);
       if (cancellationRequested || store.get(sessionId)?.cancelRequested) {
@@ -649,6 +664,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
         message: (error instanceof Error ? error.message : String(error)).slice(0, 500),
       });
       const current = store.get(sessionId);
+      if (freshBoundary && runtime.isSessionUsable?.(sessionId) !== true) store.update(sessionId, { pendingToolIds: [], sdkSessionId: undefined });
       const recoverableSwitch = error instanceof BridgeError && error.status === 409
         && ["model_switch_busy", "model_switch_requires_persistence", "model_switch_unavailable", "reasoning_switch_busy", "reasoning_switch_requires_persistence", "reasoning_switch_unavailable"].includes(error.code);
       // A full context window is not a rejected input: the native conversation cannot
@@ -673,6 +689,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
           store.update(sessionId, { ...previous, hostEnded: previous.hostEnded });
         }
       } else if (!timedOut && current?.state !== "CANCELLED" && !(error instanceof BridgeError && error.code === "host_session_ended")) {
+        if (freshBoundary) store.update(sessionId, { pendingToolIds: [], sdkSessionId: undefined });
         store.setState(sessionId, "FAILED");
         await runtime.cancel(sessionId, "request-failed").catch(() => logger.error("runtime_cancel_failed", { sessionId, reason: "request-failed" }));
       }

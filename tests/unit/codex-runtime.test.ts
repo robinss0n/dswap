@@ -67,7 +67,7 @@ function fakeServer() {
   };
   const call = (callId: string, tool = "Read", args: Record<string, unknown> = { file_path: `/${callId}` }) => {
     const answer = state.options!.onRequest!("item/tool/call", { callId, tool, arguments: args }) as Promise<{ contentItems: any[]; success: boolean }>;
-    void answer.then(() => state.log.push(`resolved:${callId}`));
+    void answer.then(() => state.log.push(`resolved:${callId}`), () => state.log.push(`rejected:${callId}`));
     return answer;
   };
   const notify = (method: string, params: unknown) => state.options!.onNotification!(method, params);
@@ -79,6 +79,103 @@ const texts = (items: any[]) => items.map((item) => item.text ?? item.url ?? ite
 
 const toolUses = (content: Array<{ type: string; id?: string }>) => content.filter((block) => block.type === "tool_use").map((block) => block.id);
 const withAskUser = [{ name: "Read", input_schema: { type: "object" } }, { name: "AskUser", input_schema: { type: "object" } }];
+
+describe("explicit fresh tool boundary", () => {
+  async function waiting() {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const first = runtime.handle(input([{ role: "user", content: "quiz" }]));
+    await tick();
+    const answer = fake.call("question");
+    const turn = await first;
+    const messages: Message[] = [{ role: "user", content: "quiz" }, { role: "assistant", content: turn.response.content },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "question", content: "correct" }] }];
+    const marked = (body = messages, boundaryId = "b1") => ({ ...input(body), previousSession: { ...session, historyMessageHashes: [...((runtime as any).lives.get(session.bridgeSessionId)?.history ?? [])], pendingToolIds: [...((runtime as any).lives.get(session.bridgeSessionId)?.pending.keys() ?? [])] }, headers: {
+      "x-bridge-session": session.bridgeSessionId,
+      "x-bridge-fresh-tool-turn": JSON.stringify({ v: 1, boundary_id: boundaryId, answered_call_ids: ["question"] }),
+    } });
+    const live = (runtime as any).lives.get(session.bridgeSessionId);
+    live.server.closeAndWait = async () => { fake.state.closed++; };
+    return { fake, runtime, answer, messages, marked, live };
+  }
+  it.each(["correct", "wrong", "free recall"])("imports %s once, rejects callbacks, replays immutable receipt", async (answerText) => {
+    const { fake, runtime, answer, messages, marked } = await waiting();
+    (messages[2].content as any)[0].content = answerText;
+    const next = runtime.handle(marked());
+    await expect(answer).rejects.toMatchObject({ code: "cancelled" });
+    await tick();
+    expect(fake.state.threadStarts).toBe(2);
+    const reference = texts(fake.state.turnStarts[1].input);
+    expect(reference).toContain('"tool_use_id":"question"');
+    expect(reference).toContain(answerText);
+    expect(reference.match(/"tool_result"/g)).toHaveLength(1);
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    const reply = await next;
+    expect(await runtime.handle(marked())).toEqual(reply);
+    expect(fake.state.turnStarts).toHaveLength(2);
+    (messages[2].content as any)[0].content = "changed";
+    await expect(runtime.handle(marked())).rejects.toMatchObject({ code: "fresh_boundary_rejected" });
+    await expect(runtime.handle(marked(messages, "b2"))).rejects.toMatchObject({ code: "fresh_boundary_rejected" });
+    await runtime.close();
+  });
+  it.each(["truncate", "mutate", "foreign", "duplicate", "missing", "orphan", "image", "result-image"])("rejects %s before destruction", async (mode) => {
+    const { fake, runtime, messages, marked, live } = await waiting();
+    if (mode === "image") (messages[2].content as any).push({ type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } });
+    if (mode === "result-image") (messages[2].content as any)[0].content = [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } }];
+    if (mode === "truncate") messages.shift();
+    if (mode === "mutate") messages[0].content = "changed";
+    if (mode === "foreign") (messages[2].content as any)[0].tool_use_id = "foreign";
+    if (mode === "duplicate") (messages[2].content as any).push((messages[2].content as any)[0]);
+    if (mode === "missing") messages.pop();
+    if (mode === "orphan") live.orphaned.set("orphan", { name: "Read", input: {} });
+    await expect(runtime.handle(marked())).rejects.toMatchObject({ code: "fresh_boundary_rejected" });
+    expect(fake.state.closed).toBe(0);
+    expect(runtime.isSessionUsable(session.bridgeSessionId)).toBe(true);
+    await runtime.close();
+  });
+  it.each(["new", "schema", "placeholder"])("requires mixed sibling completion before adopting changed catalog (%s)", async mode => {
+    const { fake, runtime, marked, messages, live } = await waiting();
+    live.pending.set("sibling", { name: "Read", input: {}, resolve() {}, reject() {} });
+    (messages[1].content as any).push({ type: "tool_use", id: "sibling", name: "Read", input: {} });
+    const { historyMessageHashes } = await import("../../src/sessions/correlate.js");
+    live.history = historyMessageHashes(messages.slice(0, 2));
+    const changed = marked();
+    const toolName = mode === "schema" ? "Read" : mode === "placeholder" ? "AskUser" : "NewTool";
+    changed.request.tools = [{ name: toolName, input_schema: { type: "object", properties: { changed: { type: "string" } } } }];
+    await expect(runtime.handle(changed)).rejects.toMatchObject({ code: "fresh_boundary_rejected" });
+    expect(fake.state.closed).toBe(0);
+    (messages[2].content as any).push({ type: "tool_result", tool_use_id: "sibling", is_error: true, content: "error detail" });
+    const next = runtime.handle(changed);
+    await tick();
+    expect(fake.state.threadStart.dynamicTools).toContainEqual(expect.objectContaining({ name: toolName }));
+    expect(texts(fake.state.turnStarts[1].input)).toContain('"is_error":true');
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    await next;
+    await runtime.close();
+  });
+  it("retains stable failure when old child cannot exit", async () => {
+    const { fake, runtime, marked, live } = await waiting();
+    live.server.closeAndWait = async () => { throw new Error("termination timeout"); };
+    await expect(runtime.handle(marked())).rejects.toMatchObject({ code: "fresh_boundary_failed" });
+    await expect(runtime.handle(marked())).rejects.toMatchObject({ code: "fresh_boundary_failed" });
+    expect(fake.state.threadStarts).toBe(1);
+    await runtime.close();
+  });
+  it("fences cancellation while old child exit is outstanding", async () => {
+    const { fake, runtime, marked, live } = await waiting();
+    let exit!: () => void;
+    live.server.closeAndWait = () => new Promise<void>((resolve) => { exit = resolve; });
+    const next = runtime.handle(marked());
+    await tick();
+    expect(fake.state.threadStarts).toBe(1);
+    await runtime.cancel(session.bridgeSessionId, "disconnect");
+    exit();
+    await expect(next).rejects.toMatchObject({ code: "cancelled" });
+    await expect(runtime.handle(marked())).rejects.toMatchObject({ code: "cancelled" });
+    expect(fake.state.threadStarts).toBe(1);
+    await runtime.close();
+  });
+});
 
 describe("CodexRuntime catalog transitions", () => {
   const prober = [{ name: "probe", input_schema: { type: "object" } }];

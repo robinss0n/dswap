@@ -3,6 +3,8 @@ import type { SessionRecord } from "../sessions/state.js";
 
 export interface RuntimeRequest {
   request: MessagesRequest;
+  /** Immutable HTTP state before request admission. */
+  previousSession?: SessionRecord;
   role: RoleTag;
   session: SessionRecord;
   headers: Record<string, string | string[] | undefined>;

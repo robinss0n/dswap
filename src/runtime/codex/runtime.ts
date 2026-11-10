@@ -1,3 +1,4 @@
+import { boundaryCanonical, boundaryError, boundaryReference, parseFreshBoundary, type FreshBoundary } from "../fresh-boundary.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -69,6 +70,7 @@ interface ResumeRecord {
 }
 
 interface LiveCodex {
+  boundaryReference?: string;
   server?: CodexAppServer;
   threadId?: string;
   account?: string;
@@ -202,6 +204,7 @@ export class CodexRuntime implements BridgeRuntime {
   private readonly resumes = new Map<string, ResumeRecord>();
   private readonly now: () => number;
   private closing = false;
+  private readonly boundaries = new Map<string, Map<string, { hash: string; turn?: RuntimeTurn; error?: BridgeError }>>();
   /** Set after shutdown saved the resume records; later changes must not overwrite them. */
   private resumesFrozen = false;
   /** Accounts that just hit a usage limit, until when `auto` skips them. */
@@ -303,14 +306,103 @@ export class CodexRuntime implements BridgeRuntime {
     return outcome;
   }
 
+  private async freshTurn(input: RuntimeRequest, boundary: FreshBoundary, sink?: StreamSink): Promise<RuntimeTurn> {
+    const id = input.session.bridgeSessionId;
+    if (input.headers["x-bridge-session"] !== id) boundaryError("Explicit bridge session required");
+    const hash = createHash("sha256").update(boundaryCanonical({ request: input.request, boundary })).digest("hex");
+    const receipts = this.boundaries.get(id) ?? new Map();
+    const prior = receipts.get(boundary.boundary_id);
+    if (prior) {
+      if (prior.hash !== hash) boundaryError("Boundary ID conflicts with immutable receipt");
+      if (prior.error) throw prior.error;
+      if (prior.turn) {
+        const expected = historyMessageHashes([...input.request.messages, { role: "assistant", content: prior.turn.response.content }]);
+        if (boundaryCanonical(this.lives.get(id)?.history) !== boundaryCanonical(expected)) boundaryError("Stale boundary receipt cannot replace newer history");
+        return structuredClone(prior.turn);
+      }
+      boundaryError("Boundary is already active");
+    }
+    if (!this.boundaries.has(id) && this.boundaries.size >= 1000) boundaryError("Global boundary receipt limit reached");
+    if (receipts.size >= 128) boundaryError("Boundary receipt limit reached");
+    const live = this.lives.get(id);
+    const route = codexFromModelId(input.request.model);
+    if (!live?.server || !live.threadId || live.ended || live.busy || live.resumeUnsafe || live.orphaned.size || live.blocks.length
+      || !live.pending.size || !live.history || !live.request || !route || route.model !== live.model
+      || input.request.model !== live.request.model || this.closing) boundaryError("Boundary requires a delivered live pending batch");
+    if (boundaryCanonical(input.request.system) !== boundaryCanonical(live.request.system)) boundaryError("System context changed");
+    const hashes = historyMessageHashes(input.request.messages);
+    if (!live.history.every((value, index) => hashes[index] === value) || hashes.length <= live.history.length) boundaryError("Full unchanged history required");
+    const tail = input.request.messages.slice(live.history.length);
+    const results = new Map<string, any>();
+    for (const message of tail) {
+      if (message.role !== "user") boundaryError("Only user messages may follow pending history");
+      for (const block of asBlocks(message.content)) {
+        if (block.type !== "tool_result") continue;
+        const resultId = String(block.tool_use_id);
+        if (!live.pending.has(resultId) || results.has(resultId)) boundaryError("Unknown or duplicate result");
+        results.set(resultId, block);
+      }
+    }
+    if (results.size !== live.pending.size || boundary.answered_call_ids.some((call) => !results.has(call))) boundaryError("Every pending sibling must be answered");
+    const delivered = input.request.messages.slice(0, live.history.length).flatMap((message) => asBlocks(message.content));
+    for (const [callId, call] of live.pending) {
+      const uses = delivered.filter((block) => block.type === "tool_use" && block.id === callId);
+      if (uses.length !== 1 || (uses[0] as any).name !== call.name || boundaryCanonical((uses[0] as any).input) !== boundaryCanonical(call.input)) boundaryError("Pending call ownership mismatch");
+    }
+    const snapshot = input.previousSession ?? input.session;
+    if (!snapshot.historyMessageHashes || boundaryCanonical(snapshot.historyMessageHashes) !== boundaryCanonical(live.history)
+      || boundaryCanonical([...snapshot.pendingToolIds].sort()) !== boundaryCanonical([...live.pending.keys()].sort())) boundaryError("HTTP/runtime history or pending mismatch");
+    const reference = boundaryReference(input.request);
+    droidReasoningEffort(input.request);
+    if (!this.config.models?.some((model) => model.id === input.request.model && model.provider === "codex")) boundaryError("Model is not on the menu");
+    // Preflight deterministic tool serialization and MCP policy before retirement.
+    (input.request.tools ?? []).forEach(codexToolSpec);
+    this.mcpServersOff(codexAccountHome(live.account!), live.account!);
+    const receipt: { hash: string; turn?: RuntimeTurn; error?: BridgeError } = { hash };
+    receipts.set(boundary.boundary_id, receipt);
+    this.boundaries.set(id, receipts);
+    try {
+      // Fence callbacks before closing; never resolve answers into the old turn.
+      live.ended = new BridgeError(499, "cancelled", "fresh-tool-turn");
+      for (const pending of live.pending.values()) pending.reject(live.ended);
+      live.pending.clear();
+      live.finishTurn?.({ status: "interrupted" });
+      this.resumes.delete(id);
+      this.saveResumes();
+      await live.server.closeAndWait();
+      if (this.lives.get(id) !== live || this.closing) throw new BridgeError(499, "cancelled", "Boundary cancelled during retirement");
+      this.lives.delete(id);
+      const replacement = this.live(id);
+      replacement.boundaryReference = reference;
+      replacement.account = live.account;
+      replacement.settled = new Set([...live.settled, ...results.keys()]);
+      replacement.reseedReason = "fresh-tool-turn";
+      const headers = { ...input.headers };
+      delete headers["x-bridge-fresh-tool-turn"];
+      const turn = await this.handle({ ...input, headers }, sink);
+      receipt.turn = structuredClone(turn);
+      return turn;
+    } catch (error) {
+      receipt.error = error instanceof BridgeError ? error : new BridgeError(502, "fresh_boundary_failed", "Fresh boundary failed after retirement");
+      await this.cancel(id, "fresh-boundary-failed");
+      throw receipt.error;
+    }
+  }
+
   async handle(input: RuntimeRequest, sink?: StreamSink): Promise<RuntimeTurn> {
     if (this.closing) throw new BridgeError(503, "bridge_shutting_down", "Bridge is shutting down");
+    const boundary = parseFreshBoundary(input.headers["x-bridge-fresh-tool-turn"]);
+    if (boundary) return this.freshTurn(input, boundary, sink);
     droidReasoningEffort(input.request);
     const route = codexFromModelId(input.request.model);
     if (!route || !this.config.models?.some((model) => model.id === input.request.model && model.provider === "codex")) {
       throw new BridgeError(400, "unknown_model", "This Codex model is not on the menu.");
     }
+    const boundaryOwner = this.lives.get(input.session.bridgeSessionId);
     await this.switchAccountIfNeeded(input.session.bridgeSessionId, route.account);
+    if (boundaryOwner?.boundaryReference && (boundaryOwner.ended || this.lives.get(input.session.bridgeSessionId) !== boundaryOwner)) {
+      throw new BridgeError(499, "cancelled", "Fresh generation was cancelled");
+    }
     let live = this.live(input.session.bridgeSessionId);
     // Check the registered catalog, not the last advertised list: older bridge
     // versions recorded additions they could never expose to Codex.
@@ -410,7 +502,7 @@ export class CodexRuntime implements BridgeRuntime {
 
   async interrupt(sessionId: string, _reason: string): Promise<boolean> {
     const live = this.lives.get(sessionId);
-    if (!live?.server || !live.threadId || !live.turnId) return false;
+    if (!live?.server || live.ended || !live.threadId || !live.turnId) return false;
     live.interrupting = true;
     try { await live.server.request("turn/interrupt", { threadId: live.threadId, turnId: live.turnId }, 10_000); return true; }
     catch { live.interrupting = false; return false; }
@@ -440,6 +532,7 @@ export class CodexRuntime implements BridgeRuntime {
     const live = this.lives.get(session.bridgeSessionId);
     if (live && (live.busy || live.pending.size || live.orphaned.size || live.turnId)) return;
     await this.retireIdle(session.bridgeSessionId, "session-expired");
+    this.boundaries.delete(session.bridgeSessionId);
   }
 
   async close(): Promise<void> {
@@ -449,6 +542,7 @@ export class CodexRuntime implements BridgeRuntime {
     this.saveResumes();
     this.resumesFrozen = true;
     this.resumes.clear();
+    this.boundaries.clear();
   }
 
   private async retireIdle(sessionId: string, reason: string): Promise<boolean> {
@@ -545,7 +639,8 @@ export class CodexRuntime implements BridgeRuntime {
 
   private async ensureThread(live: LiveCodex, input: RuntimeRequest, route: { account: string; model: string }): Promise<void> {
     if (live.server && live.threadId) return;
-    const account = await this.resolveAccount(route.account);
+    const account = live.boundaryReference && live.account ? live.account : await this.resolveAccount(route.account);
+    if (live.ended) throw live.ended;
     const home = codexAccountHome(account);
     const cwd = processCwd(resolveRequestCwd(input.headers, input.request, this.config), this.config);
     const script = input.request.tools?.some((tool) => tool.name === "Script") ?? false;
@@ -576,6 +671,7 @@ export class CodexRuntime implements BridgeRuntime {
       }
     });
     await server.initialize();
+    if (live.ended) throw live.ended;
     const threadConfig = {
       features: {
         ...CODEX_BUILTIN_FEATURES_OFF, ...CODEX_SIDE_EFFECT_FEATURES_OFF,
@@ -658,6 +754,7 @@ export class CodexRuntime implements BridgeRuntime {
       }
       throw error;
     });
+    if (live.ended) throw live.ended;
     live.threadId = started.thread.id;
     live.advertised = advertisedNames;
     live.schemas = new Map(advertised.map((tool) => [tool.name, schemaKey(tool)]));
@@ -680,7 +777,8 @@ export class CodexRuntime implements BridgeRuntime {
   private async startTurn(live: LiveCodex, input: RuntimeRequest, model: string, notes: string[] = []): Promise<void> {
     const cwd = resolveRequestCwd(input.headers, input.request, this.config);
     const droidInput = { ...input, droidPrompt: true };
-    const blocks = !live.sent && input.request.messages.length > 1 ? buildInitialUserContent(droidInput, cwd) : buildDynamicUserContent(droidInput, cwd);
+    const blocks = live.boundaryReference && !live.sent ? [{ type: "text" as const, text: live.boundaryReference }] : !live.sent && input.request.messages.length > 1 ? buildInitialUserContent(droidInput, cwd) : buildDynamicUserContent(droidInput, cwd);
+    if (live.ended) throw live.ended;
     const items = [...this.takeLateInput(live), ...notes.map((text) => ({ type: "text", text })), ...codexUserInput(blocks)];
     live.turnDone = new Promise((resolve) => { live.finishTurn = resolve; });
     const level = droidReasoningEffort(input.request);

@@ -98,6 +98,19 @@ export class CodexAppServer {
 
   get pid(): number | undefined { return this.child.pid; }
 
+  /** Bounded termination of this owned child only; replacement requires confirmed exit. */
+  async closeAndWait(): Promise<void> {
+    this.close();
+    const wait = async (ms: number): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { return await Promise.race([this.exited.then(() => true), new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), ms); })]); }
+      finally { clearTimeout(timer); }
+    };
+    if (await wait(2000)) return;
+    this.child.kill("SIGKILL");
+    if (!await wait(2000)) throw new Error("Owned Codex child did not confirm exit");
+  }
+
   stderrTail(): string { return this.stderr.toString("utf8"); }
 
   private withStderr(error: Error): Error {
