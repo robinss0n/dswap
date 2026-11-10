@@ -312,6 +312,28 @@ export class CodexRuntime implements BridgeRuntime {
     }
     await this.switchAccountIfNeeded(input.session.bridgeSessionId, route.account);
     let live = this.live(input.session.bridgeSessionId);
+    // Check the registered catalog, not the last advertised list: older bridge
+    // versions recorded additions they could never expose to Codex.
+    if (live.busy) throw new BridgeError(409, "session_busy", "This Codex session already has an active request");
+    const missing = live.threadId && hostAllowsAnyTools(input.request)
+      ? (input.request.tools ?? []).filter((tool) => !live.registered.has(tool.name)) : [];
+    if (missing.length) {
+      const incoming = historyMessageHashes(input.request.messages);
+      const complete = live.history?.every((hash, index) => incoming[index] === hash);
+      // Never settle a call just to replace its thread: resolving it lets Codex
+      // sample again, potentially issuing another external action. The caller
+      // must finish the old turn with its old catalog before retrying the switch.
+      if (!complete || live.turnId || live.pending.size || live.orphaned.size || live.blocks.length
+        || live.lateResults.length || live.resumeUnsafe || input.session.pendingToolIds.length) {
+        throw new BridgeError(409, "codex_catalog_transition_pending",
+          "Codex tool catalog changed. Finish outstanding tools and the running turn using the previous tool catalog, then retry with the full conversation history. The existing thread has not been cancelled.");
+      }
+      // cancel has no asynchronous work: remove the old owner before publishing
+      // the replacement, without yielding an unlocked session to another request.
+      void this.cancel(input.session.bridgeSessionId, "tool-catalog-change");
+      live = this.live(input.session.bridgeSessionId);
+      live.reseedReason = "tool-catalog-change";
+    }
     if (live.diverged && this.config.upstreamCompaction !== "upstream" && this.canReseed(live, input)) {
       // Codex summarized on its own, so the model no longer sees Droid's history.
       // At the next new user turn, rebuild the thread from what Droid sent.
@@ -574,6 +596,7 @@ export class CodexRuntime implements BridgeRuntime {
     if (this.resumes.delete(sessionId)) this.saveResumes();
     const incoming = historyMessageHashes(input.request.messages);
     if (resume && resume.account === account && resume.model === route.model
+      && (!hostAllowsAnyTools(input.request) || (input.request.tools ?? []).every((tool) => resume.registered.has(tool.name)))
       && incoming.length > resume.history.length && input.request.messages[resume.history.length]?.role === "user"
       && resume.history.every((hash, index) => incoming[index] === hash)
       && input.request.messages.slice(resume.history.length).every((message) => message.role === "user")) {

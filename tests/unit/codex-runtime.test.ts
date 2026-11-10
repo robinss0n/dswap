@@ -80,6 +80,72 @@ const texts = (items: any[]) => items.map((item) => item.text ?? item.url ?? ite
 const toolUses = (content: Array<{ type: string; id?: string }>) => content.filter((block) => block.type === "tool_use").map((block) => block.id);
 const withAskUser = [{ name: "Read", input_schema: { type: "object" } }, { name: "AskUser", input_schema: { type: "object" } }];
 
+describe("CodexRuntime catalog transitions", () => {
+  const prober = [{ name: "probe", input_schema: { type: "object" } }];
+  const teacher = [...prober, { name: "plan_init", input_schema: { type: "object" } }];
+  it.each(["live", "retired", "legacy-advertised"])("rebuilds prober history for teacher tools (%s), then reuses it", async (mode) => {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const messages: Message[] = [{ role: "user", content: "probe first" }];
+    const first = runtime.handle(input(messages, { tools: prober }));
+    await tick();
+    fake.notify("item/agentMessage/delta", { itemId: "probe-answer", delta: "probe complete" });
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    const answer = await first;
+    messages.push({ role: "assistant", content: answer.response.content }, { role: "user", content: "teach now" });
+    if (mode === "retired") await runtime.endHostSession(session.bridgeSessionId, "test");
+    if (mode === "legacy-advertised") {
+      // Model the old updateAdvertised bug: the name was advertised but never registered.
+      const lives = (runtime as unknown as { lives: Map<string, { advertised: Set<string> }> }).lives;
+      lives.get(session.bridgeSessionId)!.advertised.add("plan_init");
+    }
+    if (mode === "live") {
+      await expect(runtime.handle(input([{ role: "user", content: "truncated" }], { tools: teacher })))
+        .rejects.toMatchObject({ status: 409 });
+      expect(fake.state.closed).toBe(0);
+    }
+    const next = runtime.handle(input(messages, { tools: teacher }));
+    await tick();
+    expect(fake.state.threadStarts).toBe(2);
+    expect(fake.state.threadResumes).toHaveLength(0);
+    expect(fake.state.threadStart.dynamicTools).toContainEqual(expect.objectContaining({ name: "plan_init" }));
+    expect(texts(fake.state.turnStarts[1].input)).toContain("probe complete");
+    const call = fake.call("plan", "plan_init");
+    const toolTurn = await next;
+    expect(toolTurn.pendingToolIds).toEqual(["plan"]);
+    const followup = runtime.handle(input([...messages, { role: "assistant", content: toolTurn.response.content },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "plan", content: "plan saved" }] }], { tools: teacher }));
+    await call;
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    await followup;
+    expect(fake.state.threadStarts).toBe(2);
+    await runtime.close();
+  });
+
+  it.each([false, true])("rejects a pending transition without resolving calls or cancelling (orphan=%s)", async (orphan) => {
+    const fake = fakeServer();
+    const runtime = new CodexRuntime(config(), logger, { open: fake.open });
+    const messages: Message[] = [{ role: "user", content: "probe" }];
+    const first = runtime.handle(input(messages, { tools: prober }));
+    await tick();
+    const call = fake.call("probe-call", "probe");
+    const turn = await first;
+    if (orphan) fake.notify("turn/completed", { turn: { status: "completed" } });
+    messages.push({ role: "assistant", content: turn.response.content },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "probe-call", content: "done" }] });
+    await expect(runtime.handle(input(messages, { tools: teacher }))).rejects.toMatchObject({ status: 409, code: "codex_catalog_transition_pending" });
+    expect(fake.state.closed).toBe(0);
+    expect(runtime.pendingHostCalls(session.bridgeSessionId)).toHaveLength(1);
+    const finish = runtime.handle(input(messages, { tools: prober }));
+    await tick();
+    await expect(runtime.handle(input(messages, { tools: teacher }))).rejects.toMatchObject({ status: 409 });
+    await call;
+    fake.notify("turn/completed", { turn: { status: "completed" } });
+    await finish;
+    await runtime.close();
+  });
+});
+
 describe("CodexRuntime thread resume", () => {
   const opening: Message = { role: "user", content: "original question" };
   async function finished(runtime: CodexRuntime, fake: ReturnType<typeof fakeServer>, request = input([opening])) {
