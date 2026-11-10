@@ -46,7 +46,8 @@ describe("window priming rules", () => {
     expect(inQuiet(new Date(2026, 9, 31, 1, 0), "23:30-06:00")).toBe(true);
     expect(inQuiet(new Date(2026, 9, 31, 12, 0), "23:30-06:00")).toBe(false);
     const noon = new Date(2026, 9, 31, 12, 0);
-    expect(globalPause(DEFAULT_PRIME_CONFIG, noon, noon.getTime() - 9 * 3_600_000)).toMatch(/Droid unused for 9h/);
+    expect(globalPause({ ...DEFAULT_PRIME_CONFIG, idleHours: 8 }, noon, noon.getTime() - 9 * 3_600_000)).toMatch(/Droid unused for 9h/);
+    expect(globalPause(DEFAULT_PRIME_CONFIG, noon, noon.getTime() - 9 * 3_600_000)).toBeUndefined();
     expect(globalPause(DEFAULT_PRIME_CONFIG, noon, noon.getTime() - 3_600_000)).toBeUndefined();
     expect(globalPause(DEFAULT_PRIME_CONFIG, noon, undefined)).toBeUndefined();
     expect(globalPause({ ...DEFAULT_PRIME_CONFIG, idleHours: undefined }, noon, 0)).toBeUndefined();

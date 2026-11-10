@@ -112,6 +112,7 @@ export async function primeOnce(options: { dryRun?: boolean; force?: boolean; se
   const config = loadPrimeConfig(), state = loadPrimeState(), now = Date.now();
   const pause = options.force ? undefined : globalPause(config, new Date(now), lastDroidActivity());
   if (pause) {
+    if (options.service && !options.dryRun) primeLog(`paused: ${pause}`);
     if (!options.service) process.stdout.write(`Not priming now: ${pause}.\n`);
     return [];
   }

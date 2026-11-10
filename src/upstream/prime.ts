@@ -38,7 +38,7 @@ export interface PrimeConfig {
   weeklyCap: number;
 }
 
-export const DEFAULT_PRIME_CONFIG: PrimeConfig = { providers: { claude: true, codex: true, google: true }, quiet: "03:00-05:00", idleHours: 8, weeklyCap: 90 };
+export const DEFAULT_PRIME_CONFIG: PrimeConfig = { providers: { claude: true, codex: true, google: true }, quiet: "03:00-05:00", idleHours: undefined, weeklyCap: 90 };
 
 export interface PrimeState {
   /** Last ping per `provider:account`, epoch ms. */
