@@ -82,6 +82,18 @@ describe("a conversation Droid compacted away while it waited on a tool", () => 
     expect(app.store.require(old.sessionId)).toMatchObject({ state: "IDLE", pendingToolIds: [], endedToolIds: [old.toolUseId] });
   });
 
+  it("releases a call answered in Droid's real transcript format, the result in a USER message", async () => {
+    const { app, token } = await bridge();
+    const old = await parkOrchestrator(app, token, "real-format");
+    vi.mocked(runtime.handle).mockResolvedValueOnce(text(SUMMARY));
+    const request = summarizer({ name: "StartMissionRun", input: missionRun });
+    request.messages[0]!.content = request.messages[0]!.content.replace("\n\nTOOL_CALL: StartMissionRun", "\nTOOL_CALL: StartMissionRun").replace("TOOL: TOOL_RESULT:", "USER: TOOL_RESULT:");
+    expect(request.messages[0]!.content).toContain("ASSISTANT: Starting.\nTOOL_CALL: StartMissionRun input=");
+    expect((await postMessages(app.url, token, request)).status).toBe(200);
+    expect((await postMessages(app.url, token, continuation())).status).toBe(200);
+    expect(runtime.cancel).toHaveBeenCalledExactlyOnceWith(old.sessionId, "compacted-by-droid");
+  });
+
   it("ignores tool-call text inside a result when linking the answered outer call", async () => {
     const { app, token } = await bridge();
     const input = { task_id: "fixture-review", block: true };

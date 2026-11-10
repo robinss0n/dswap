@@ -30,6 +30,7 @@ interface Seen { model: string; internal: boolean; text: string; effort?: unknow
 
 async function start(overrides: Partial<BridgeConfig> = {}) {
   const seen: Seen[] = [];
+  let cacheRead = 898;
   const runtime: BridgeRuntime = {
     kind: "fake",
     async handle(input) {
@@ -39,7 +40,7 @@ async function start(overrides: Partial<BridgeConfig> = {}) {
       const reply = text.startsWith("Transcript of the conversation") ? "<summary>CHECKED</summary>"
         : text.startsWith("Please summarize") && input.headers["x-bridge-internal"] ? "<summary>DRAFT</summary>"
         : text.startsWith("Please summarize") || text.startsWith("Previous summary") ? "<summary>FINAL</summary>" : "ok";
-      return { response: assistantMessage(input.request.model, [{ type: "text", text: reply }], "end_turn", { input_tokens: 2, cache_read_input_tokens: 898, output_tokens: 1 }), pendingToolIds: [] };
+      return { response: assistantMessage(input.request.model, [{ type: "text", text: reply }], "end_turn", { input_tokens: 2, cache_read_input_tokens: cacheRead, output_tokens: 1 }), pendingToolIds: [] };
     },
     async cancel() {}, async deliverResults() { return []; },
   };
@@ -54,7 +55,7 @@ async function start(overrides: Partial<BridgeConfig> = {}) {
     await response.text();
   };
   const until = async (count: number) => { for (let i = 0; i < 200 && seen.length < count; i++) await new Promise((resolve) => setTimeout(resolve, 10)); };
-  return { app, seen, logger, post, until };
+  return { app, seen, logger, post, until, setTokens: (tokens: number) => { cacheRead = tokens - 3; } };
 }
 
 const droidTurn = (model: string) => ({ model, max_tokens: 64, output_config: { effort: "high" }, messages: [{ role: "user", content: "keep PORT 8123" }] });
@@ -107,6 +108,21 @@ describe("background pre-summary over HTTP", () => {
     await post(droidTurn("opus"));
     await until(4);
     expect(seen.map(({ internal }) => internal)).toEqual([false, false, true, true]);
+  });
+
+  it("follows a compaction limit raised in Droid", async () => {
+    const { app, seen, logger, post, until, setTokens } = await start();
+    setTokens(1500);
+    await post(droidTurn("opus"));
+    await until(3);
+    await post({ ...droidTurn("opus"), messages: [...droidTurn("opus").messages, { role: "assistant", content: "ok" }, { role: "user", content: "next" }] });
+    expect(logger.info).toHaveBeenCalledWith("compaction_limit_learned", expect.objectContaining({ model: "opus", role: "chat", from: 1000, to: 1500, source: "raised" }));
+    expect(app.runtimeStatus()).toMatchObject({ presummary: { compactionLimits: { learned: { "opus chat": { limit: 1500 } } } } });
+    setTokens(1000);
+    const before = seen.length;
+    await post({ ...droidTurn("opus"), messages: [{ role: "user", content: "another chat" }] });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(seen.length).toBe(before + 1);
   });
 
   it.each([

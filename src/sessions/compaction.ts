@@ -32,7 +32,8 @@ export function lastSummarizedToolCall(request: MessagesRequest): SummarizedTool
       const match = TOOL_CALL.exec(line);
       if (match) last = { match, answered: false };
     }
-    if (last && (actor === "TOOL" || actor === undefined) && /^TOOL_RESULT\b/.test(line)) last.answered = true;
+    // Droid writes results in the user messages that carry them (`USER: TOOL_RESULT: ...`).
+    if (last && (actor === "USER" || actor === "TOOL" || actor === undefined) && /^TOOL_RESULT\b/.test(line)) last.answered = true;
   }
   if (!last?.answered) return undefined;
   try {

@@ -64,10 +64,8 @@ export class Presummaries {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** After a Claude turn. Starts at most one job at a time, and one per conversation. */
-  consider(key: string, request: MessagesRequest, tokens: number): boolean {
-    const orchestrator = isMissionOrchestrator(request);
-    const limit = orchestrator ? this.config.orchestratorLimit : this.config.limit;
+  /** After a Claude turn, with the compaction limit Droid will compare `tokens` with. Starts at most one job at a time, and one per conversation. */
+  consider(key: string, request: MessagesRequest, tokens: number, limit = this.config.limit, role = "chat"): boolean {
     if (tokens < this.config.at * limit || this.entries.has(key)) return false;
     if ([...this.entries.values()].some((entry) => entry.state === "running")) return false;
     this.prune();
@@ -75,7 +73,7 @@ export class Presummaries {
     if (!prefix) return false;
     const entry: Entry = { prefix, state: "running", startedAt: this.now(), controller: new AbortController() };
     this.entries.set(key, entry);
-    this.logger.info("presummary_started", { tokens, limit, orchestrator, messages: request.messages.length, chars: prefix.length });
+    this.logger.info("presummary_started", { tokens, limit, role, messages: request.messages.length, chars: prefix.length });
     void this.run(entry, request.model);
     return true;
   }

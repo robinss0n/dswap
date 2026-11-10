@@ -17,6 +17,7 @@ import { droidReasoningEffort, droidReasoningLevel } from "../runtime/reasoning.
 import { isEnded } from "../sessions/state.js";
 import { HUMAN_WAIT_TOOLS, MISSION_SPAWN_TOOLS, MISSION_WORKER_END_TOOL } from "../runtime/mission-tools.js";
 import { Presummaries, PRESUMMARY_HEADER, promptTokens } from "../sessions/presummary.js";
+import { CompactionLimits } from "../sessions/compaction-limits.js";
 import { compactedSummaryText, compactionSummaryKey, droidSummarizerInstructions, lastSummarizedToolCall, routedSummaryRequest, sameToolInput, summaryQuote } from "../sessions/compaction.js";
 import { CONTEXT_OVERFLOW_CODE } from "../runtime/upstream-error.js";
 import { FallbackAlerts } from "../notify.js";
@@ -72,6 +73,8 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
   // Approvals wait on a person, so they get their own limit rather than the turn's idle limit.
   const control = new ControlBroker(runtime, store, config.approvalTimeoutMs);
   const presummaries = config.presummary ? new Presummaries(config.presummary, sendInternal, logger) : undefined;
+  const limits = config.presummary ? new CompactionLimits({ chat: config.presummary.limit, orchestrator: config.presummary.orchestratorLimit }, logger,
+    config.persistSessions ? join(config.dataDir, "compaction-limits.json") : undefined) : undefined;
   runtime.setControl?.(control);
   const records: RedactedRequestRecord[] = [];
   const router = config.models?.some((model) => model.id.startsWith(ROUTE_MODEL_PREFIX))
@@ -403,6 +406,10 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       }
       parsed = { ...parsed, model: routed.target };
     }
+    if (limits && !internal && claudeModel(parsed.model)) {
+      if (droidSummarizerInstructions(parsed)) logger.info("compaction_observed", limits.observeCompaction(parsed));
+      else limits.observeRequest(conversationKey(parsed, droidWorkingDirectory(parsed)));
+    }
     if (presummaries && !internal && droidSummarizerInstructions(parsed) && claudeModel(parsed.model)) {
       const taken = presummaries.take(parsed);
       const { request: _rewritten, ...path } = taken;
@@ -644,8 +651,10 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
       store.setState(sessionId, turn.pendingToolIds.length ? "WAITING_DROID_TOOL" : "IDLE");
       if (turn.pendingToolIds.length) scheduleWorkerEnd(sessionId, turn.pendingToolIds);
       // Only first compactions are pre-summarized: a continuation's next summary is Droid's update form.
-      if (presummaries && !internal && provider === "claude" && !droidSummarizerInstructions(parsed) && compactedSummaryText(parsed) === undefined) {
-        presummaries.consider(conversationKey(parsed, droidWorkingDirectory(parsed)), parsed, promptTokens(turn.response.usage));
+      if (limits && !internal && provider === "claude" && !droidSummarizerInstructions(parsed)) {
+        const key = conversationKey(parsed, droidWorkingDirectory(parsed)), tokens = promptTokens(turn.response.usage);
+        const { limit, role } = limits.observeTurn(key, parsed, tokens, turn.response.content);
+        if (presummaries && compactedSummaryText(parsed) === undefined) presummaries.consider(key, parsed, tokens, limit, role);
       }
       if (summarized) rememberCompaction(summarized, turn.response.content.map((block) => (block.type === "text" && typeof block.text === "string" ? block.text : "")).join("\n"));
       appendLogLine(turnLog, JSON.stringify(redactJson({
@@ -858,7 +867,7 @@ export function createBridgeApp(config: BridgeConfig, logger: Logger, canaryPath
     return { ...runtime.describe?.(), control: control.describe(), authFailureCount, activeRequests: activeRequests.size,
       retainedSessions: store.list().length, workerEndTimers: workerEndTimers.size, compactionLinks: compactions.size,
       upstreamCompaction: config.upstreamCompaction ?? "off", summaryRoute: config.summaryRoute ?? null,
-      presummary: config.presummary && presummaries ? { ...config.presummary, ...presummaries.describe() } : null, continuity: { ...continuityCounts },
+      presummary: config.presummary && presummaries ? { ...config.presummary, ...presummaries.describe(), compactionLimits: limits?.describe() } : null, continuity: { ...continuityCounts },
       memory: { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed }, closing };
   }
 }

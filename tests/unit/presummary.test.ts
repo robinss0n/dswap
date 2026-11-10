@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isMissionOrchestrator, Presummaries, promptTokens, summaryText } from "../../src/sessions/presummary.js";
+import { Presummaries, promptTokens, summaryText } from "../../src/sessions/presummary.js";
 import { MESSAGE_BOUNDARY, serializeTranscript } from "../../src/sessions/presummary-transcript.js";
 import type { MessagesRequest } from "../../src/types.js";
 
@@ -54,16 +54,11 @@ describe("background pre-summary", () => {
     expect(jobs.take(compaction(`${prefix}${MESSAGE_BOUNDARY}USER: later`))).toMatchObject({ path: "plain", reason: "no pre-summary" });
   });
 
-  it("uses the orchestrator's own limit for a Missions orchestrator", () => {
-    const orchestrator = (text: string): MessagesRequest => ({ ...turn(text), system: [{ type: "text", text: "You are Droid." }, { type: "text", text: "# Workstream orchestrator\n\nMission: build it" }] });
-    expect(isMissionOrchestrator(orchestrator("x"))).toBe(true);
-    expect(isMissionOrchestrator({ ...turn("x"), system: "Notes on the # Workstream orchestrator heading" })).toBe(false);
+  it("starts at the share of the limit it is given", () => {
     const jobs = new Presummaries(CONFIG, fakeSend(() => new Promise<string>(() => {})).send, logger());
-    expect(jobs.consider("o", orchestrator("x"), 1399)).toBe(false);
-    expect(jobs.consider("o", orchestrator("x"), 1400)).toBe(true);
-    const normal = new Presummaries(CONFIG, fakeSend(() => new Promise<string>(() => {})).send, logger());
-    expect(normal.consider("n", turn("x"), 700)).toBe(true);
-    jobs.close(); normal.close();
+    expect(jobs.consider("o", turn("x"), 1399, 2000, "orchestrator")).toBe(false);
+    expect(jobs.consider("o", turn("x"), 1400, 2000, "orchestrator")).toBe(true);
+    jobs.close();
   });
 
   it("keeps the unchecked draft when only the check fails, and records a failed summary", async () => {
